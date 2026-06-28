@@ -1,0 +1,12 @@
+{
+  "action": "opened",
+  "installation": {"id": 42},
+  "repository": {
+    "name": "repo",
+    "owner": {"login": "octo"}
+  },
+  "pull_request": {
+    "number": 7,
+    "head": {"sha": "abc123"}
+  }
+}
