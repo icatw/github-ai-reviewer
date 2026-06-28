@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -27,6 +28,85 @@ func TestGenerateJWT(t *testing.T) {
 	}
 	if strings.Count(token, ".") != 2 {
 		t.Fatalf("JWT() = %q, want compact token", token)
+	}
+}
+
+func TestClientFetchesFileContentAndListsDirectoryAtRef(t *testing.T) {
+	key := testPrivateKey(t)
+	var sawFileRef, sawDirRef bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/contents/pkg/foo.go":
+			sawFileRef = r.Header.Get("Authorization") == "Bearer installation-token" && r.URL.Query().Get("ref") == "abc"
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"type":     "file",
+				"path":     "pkg/foo.go",
+				"encoding": "base64",
+				"content":  base64.StdEncoding.EncodeToString([]byte("package pkg\n")),
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/contents/docs":
+			sawDirRef = r.Header.Get("Authorization") == "Bearer installation-token" && r.URL.Query().Get("ref") == "abc"
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"type": "file", "path": "docs/b.md"},
+				{"type": "dir", "path": "docs/nested"},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	content, err := client.FetchFileContent(context.Background(), 42, "octo", "repo", "abc", "pkg/foo.go")
+	if err != nil {
+		t.Fatalf("FetchFileContent() error = %v", err)
+	}
+	entries, err := client.ListDirectory(context.Background(), 42, "octo", "repo", "abc", "docs")
+	if err != nil {
+		t.Fatalf("ListDirectory() error = %v", err)
+	}
+	if content != "package pkg\n" {
+		t.Fatalf("content = %q", content)
+	}
+	if len(entries) != 2 || entries[0].Path != "docs/b.md" || entries[0].Type != review.RepositoryEntryFile {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if !sawFileRef || !sawDirRef {
+		t.Fatalf("sawFileRef=%v sawDirRef=%v", sawFileRef, sawDirRef)
+	}
+}
+
+func TestClientListsRootDirectoryAtRef(t *testing.T) {
+	key := testPrivateKey(t)
+	var sawRoot bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/contents":
+			sawRoot = r.URL.Query().Get("ref") == "abc"
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"type": "file", "path": "main_test.go"}})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	entries, err := client.ListDirectory(context.Background(), 42, "octo", "repo", "abc", ".")
+	if err != nil {
+		t.Fatalf("ListDirectory() error = %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "main_test.go" || !sawRoot {
+		t.Fatalf("entries=%+v sawRoot=%v", entries, sawRoot)
 	}
 }
 

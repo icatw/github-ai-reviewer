@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -86,6 +87,53 @@ func (c *Client) FetchPullRequestFiles(ctx context.Context, installationID int64
 			Deletions: f.Deletions,
 			Patch:     f.Patch,
 		})
+	}
+	return out, nil
+}
+
+func (c *Client) FetchFileContent(ctx context.Context, installationID int64, owner, repo, ref, filePath string) (string, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return "", err
+	}
+	apiPath := contentPath(owner, repo, filePath, ref)
+	var out githubContent
+	if err := c.doJSON(ctx, http.MethodGet, apiPath, token, nil, &out, http.StatusOK); err != nil {
+		if isNotFound(err) {
+			return "", review.ErrRepositoryContentNotFound
+		}
+		return "", err
+	}
+	if out.Type != "file" {
+		return "", review.ErrRepositoryContentNotFound
+	}
+	if out.Encoding != "base64" {
+		return "", fmt.Errorf("github content encoding %q is unsupported", out.Encoding)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
+func (c *Client) ListDirectory(ctx context.Context, installationID int64, owner, repo, ref, dirPath string) ([]review.RepositoryEntry, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	apiPath := contentPath(owner, repo, dirPath, ref)
+	var contents []githubContent
+	if err := c.doJSON(ctx, http.MethodGet, apiPath, token, nil, &contents, http.StatusOK); err != nil {
+		if isNotFound(err) {
+			return nil, review.ErrRepositoryContentNotFound
+		}
+		return nil, err
+	}
+	out := make([]review.RepositoryEntry, 0, len(contents))
+	for _, item := range contents {
+		entryType := review.RepositoryEntryType(item.Type)
+		out = append(out, review.RepositoryEntry{Path: item.Path, Type: entryType})
 	}
 	return out, nil
 }
@@ -301,4 +349,29 @@ type githubCheckRunOutput struct {
 
 func urlQueryEscape(value string) string {
 	return url.QueryEscape(value)
+}
+
+func urlPathEscape(value string) string {
+	escaped := url.PathEscape(value)
+	return strings.ReplaceAll(escaped, "%2F", "/")
+}
+
+func contentPath(owner, repo, repoPath, ref string) string {
+	base := fmt.Sprintf("/repos/%s/%s/contents", owner, repo)
+	clean := strings.Trim(strings.TrimSpace(repoPath), "/")
+	if clean == "" || clean == "." {
+		return base + "?ref=" + urlQueryEscape(ref)
+	}
+	return base + "/" + urlPathEscape(clean) + "?ref=" + urlQueryEscape(ref)
+}
+
+func isNotFound(err error) bool {
+	return strings.Contains(err.Error(), "status 404")
+}
+
+type githubContent struct {
+	Type     string `json:"type"`
+	Path     string `json:"path"`
+	Encoding string `json:"encoding"`
+	Content  string `json:"content"`
 }

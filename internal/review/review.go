@@ -3,9 +3,7 @@ package review
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
-	"strings"
 )
 
 type Job struct {
@@ -57,7 +55,12 @@ func (s *Service) Process(ctx context.Context, job Job) error {
 		}
 		return err
 	}
-	result, err := s.llm.Review(ctx, BuildPrompt(job, files, 12000))
+	repoContext := BuildPatchContext(files, DefaultContextBudgets.MaxPatchBytes)
+	if reader, ok := s.github.(RepositoryReader); ok {
+		repoContext = BuildRepoContext(ctx, job, files, reader, DefaultContextBudgets)
+	}
+	s.logf("review context built delivery=%s repo=%s/%s pull=%d patches=%d full_files=%d related_tests=%d repo_docs=%d omitted=%d", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, len(repoContext.Patches), len(repoContext.FullFiles), len(repoContext.RelatedTests), len(repoContext.RepoDocs), len(repoContext.Omitted))
+	result, err := s.llm.Review(ctx, BuildPromptWithContext(job, repoContext))
 	if err != nil {
 		category := reviewErrorCategory(err)
 		s.logf("review job failed stage=llm category=%s delivery=%s repo=%s/%s pull=%d error=%v", category, job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
@@ -80,40 +83,7 @@ func (s *Service) Process(ctx context.Context, job Job) error {
 }
 
 func BuildPrompt(job Job, files []FileChange, maxPatchChars int) string {
-	if maxPatchChars <= 0 {
-		maxPatchChars = 12000
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Review pull request %s/%s#%d at head %s.\n", job.Owner, job.Repo, job.PullNumber, job.HeadSHA)
-	fmt.Fprintf(&b, "Webhook action: %s.\n", job.Action)
-	b.WriteString("Return JSON-only output matching this schema: {\"summary\": string, \"risk_score\": integer 0-100, \"findings\": [{\"severity\": \"blocker|warning|suggestion|question\", \"category\": string, \"file\": string, \"line\": integer, \"title\": string, \"evidence\": string, \"failure_scenario\": string, \"suggestion\": string, \"confidence\": number 0.0-1.0}], \"missing_tests\": [string], \"limitations\": [string]}.\n")
-	b.WriteString("Findings are advisory and non-blocking. Be concise and evidence-based. Use only the context below; if context is insufficient, record the limitation instead of fabricating unavailable context.\n\n")
-	remaining := maxPatchChars
-	omitted := false
-	for _, f := range files {
-		fmt.Fprintf(&b, "File: %s\nStatus: %s\nAdditions: %d Deletions: %d\n", f.Filename, f.Status, f.Additions, f.Deletions)
-		patch := f.Patch
-		if patch != "" {
-			if remaining <= 0 {
-				omitted = true
-				b.WriteString("Patch omitted due to prompt budget.\n\n")
-				continue
-			}
-			if len(patch) > remaining {
-				patch = patch[:remaining]
-				omitted = true
-			}
-			remaining -= len(patch)
-			b.WriteString("Patch:\n")
-			b.WriteString(patch)
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-	}
-	if omitted {
-		b.WriteString("Some patch context was omitted due to the prompt budget. Mention this limitation if it affects confidence.\n")
-	}
-	return b.String()
+	return BuildPromptWithContext(job, BuildPatchContext(files, maxPatchChars))
 }
 
 func (s *Service) logf(format string, args ...any) {

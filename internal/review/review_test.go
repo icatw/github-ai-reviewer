@@ -12,6 +12,13 @@ import (
 func TestServiceProcessesJobEndToEnd(t *testing.T) {
 	gh := &fakeGitHub{
 		files: []FileChange{{Filename: "main.go", Status: "modified", Additions: 1, Patch: "@@ test"}},
+		contents: map[string]string{
+			"main.go":      "package main\n",
+			"main_test.go": "package main\nfunc TestMain(t *testing.T) {}\n",
+		},
+		dirs: map[string][]RepositoryEntry{
+			".": {{Path: "main_test.go", Type: RepositoryEntryFile}},
+		},
 	}
 	risk := 10
 	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused.", RiskScore: &risk}}
@@ -27,6 +34,41 @@ func TestServiceProcessesJobEndToEnd(t *testing.T) {
 	}
 	if llm.prompt == "" || reporter.result.Summary == "" || reporter.started != 1 || reporter.completed != 1 || reporter.job.InstallationID != 42 {
 		t.Fatalf("llm/reporter fakes not called: %+v %+v", llm, reporter)
+	}
+	for _, want := range []string{"patch_context", "full_file_context", "related_test_context", "repo_docs_context", "package main"} {
+		if !strings.Contains(llm.prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, llm.prompt)
+		}
+	}
+	if gh.ref != "abc" || !contains(gh.fetched, "main.go") || !contains(gh.fetched, "main_test.go") {
+		t.Fatalf("repo content was not fetched at head: ref=%q fetched=%v", gh.ref, gh.fetched)
+	}
+}
+
+func TestServiceLogsSafeContextSummary(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	gh := &fakeGitHub{
+		files: []FileChange{{Filename: "main.go", Status: "modified", Additions: 1, Patch: "@@ test"}},
+		contents: map[string]string{
+			"main.go":   "package main\nconst secret = \"do-not-log\"\n",
+			"README.md": "# Repo\n",
+		},
+	}
+	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
+	svc := NewService(gh, llm, &fakeReporter{}, logger)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc", DeliveryID: "d1"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	logLine := buf.String()
+	for _, want := range []string{"review context built", "patches=1", "full_files=1", "repo_docs=1"} {
+		if !strings.Contains(logLine, want) {
+			t.Fatalf("log line %q missing %q", logLine, want)
+		}
+	}
+	if strings.Contains(logLine, "do-not-log") || strings.Contains(logLine, "package main") {
+		t.Fatalf("log line leaked context content: %q", logLine)
 	}
 }
 
@@ -173,12 +215,35 @@ type fakeGitHub struct {
 	repo           string
 	pullNumber     int
 	files          []FileChange
+	contents       map[string]string
+	dirs           map[string][]RepositoryEntry
+	fetched        []string
+	ref            string
 	err            error
 }
 
 func (f *fakeGitHub) FetchPullRequestFiles(ctx context.Context, installationID int64, owner, repo string, pullNumber int) ([]FileChange, error) {
 	f.installationID, f.owner, f.repo, f.pullNumber = installationID, owner, repo, pullNumber
 	return f.files, f.err
+}
+
+func (f *fakeGitHub) FetchFileContent(ctx context.Context, installationID int64, owner, repo, ref, path string) (string, error) {
+	f.installationID, f.owner, f.repo, f.ref = installationID, owner, repo, ref
+	f.fetched = append(f.fetched, path)
+	content, ok := f.contents[path]
+	if !ok {
+		return "", ErrRepositoryContentNotFound
+	}
+	return content, nil
+}
+
+func (f *fakeGitHub) ListDirectory(ctx context.Context, installationID int64, owner, repo, ref, path string) ([]RepositoryEntry, error) {
+	f.installationID, f.owner, f.repo, f.ref = installationID, owner, repo, ref
+	entries, ok := f.dirs[path]
+	if !ok {
+		return nil, ErrRepositoryContentNotFound
+	}
+	return entries, nil
 }
 
 type fakeLLM struct {
