@@ -35,15 +35,18 @@ const (
 )
 
 type VerificationStats struct {
-	TotalFindings  int
-	Kept           int
-	Downgraded     int
-	Dropped        int
-	NoFindingCount int
-	KeptRate       float64
-	DowngradedRate float64
-	DroppedRate    float64
-	Reasons        map[VerificationReason]int
+	TotalFindings            int
+	Kept                     int
+	Downgraded               int
+	Dropped                  int
+	NoFindingCount           int
+	KeptRate                 float64
+	DowngradedRate           float64
+	DroppedRate              float64
+	StaticCheckEvidenceCount int
+	StaticCheckSupported     int
+	StaticCheckSkipped       map[GoAnalyzerExitCategory]int
+	Reasons                  map[VerificationReason]int
 }
 
 type EvidenceSource struct {
@@ -72,6 +75,7 @@ func VerifyReviewResult(raw ReviewResult, repoContext RepoContext) (ReviewResult
 		TotalFindings: len(raw.Findings),
 		Reasons:       map[VerificationReason]int{},
 	}
+	stats.collectStaticCheckStats(repoContext)
 	if len(raw.Findings) == 0 {
 		stats.NoFindingCount = 1
 		stats.Reasons[VerificationReasonNoFindings] = 1
@@ -82,6 +86,9 @@ func VerifyReviewResult(raw ReviewResult, repoContext RepoContext) (ReviewResult
 	for _, finding := range raw.Findings {
 		outcome, reason, outFinding := verifyFinding(finding, index)
 		stats.Reasons[reason]++
+		if outcome == VerificationOutcomeKept && reason == VerificationReasonSupported && findingSupportedByStaticCheck(finding, index) {
+			stats.StaticCheckSupported++
+		}
 		switch outcome {
 		case VerificationOutcomeKept:
 			stats.Kept++
@@ -144,11 +151,35 @@ func BuildEvidenceIndex(ctx RepoContext) EvidenceIndex {
 			Lines:   fullFileLineSet(file.Content),
 		})
 	}
+	for _, item := range ctx.StaticChecks {
+		if item.Path == "" || item.Message == "" {
+			continue
+		}
+		index.addSource(EvidenceSource{
+			Type:    EvidenceSourceStaticCheck,
+			Path:    item.Path,
+			Content: staticCheckEvidenceContent(item),
+			Lines:   staticCheckLineSet(item),
+		})
+	}
 	for _, omitted := range ctx.Omitted {
 		normalized := NormalizeEvidencePath(omitted.Path)
 		index.omitted[normalized] = append(index.omitted[normalized], omitted)
 	}
 	return index
+}
+
+func (s *VerificationStats) collectStaticCheckStats(ctx RepoContext) {
+	if len(ctx.StaticChecks) == 0 {
+		return
+	}
+	s.StaticCheckSkipped = map[GoAnalyzerExitCategory]int{}
+	for _, item := range ctx.StaticChecks {
+		s.StaticCheckEvidenceCount++
+		if item.ExitCategory != "" {
+			s.StaticCheckSkipped[item.ExitCategory]++
+		}
+	}
 }
 
 func (e *EvidenceIndex) addSource(source EvidenceSource) {
@@ -257,6 +288,36 @@ func evidenceSupportedForFile(finding Finding, file *indexedFile) bool {
 			continue
 		}
 		if matcher.matches(source) {
+			return true
+		}
+	}
+	return false
+}
+
+func findingSupportedByStaticCheck(finding Finding, index EvidenceIndex) bool {
+	normalizedFile := NormalizeEvidencePath(finding.File)
+	if normalizedFile == "" {
+		for _, file := range index.files {
+			if findingSupportedByStaticCheckInFile(finding, file) {
+				return true
+			}
+		}
+		return false
+	}
+	file := index.files[normalizedFile]
+	return findingSupportedByStaticCheckInFile(finding, file)
+}
+
+func findingSupportedByStaticCheckInFile(finding Finding, file *indexedFile) bool {
+	if file == nil {
+		return false
+	}
+	matcher := newEvidenceMatcher(finding, file.Path)
+	if matcher.normalizedEvidence == "" {
+		return false
+	}
+	for _, source := range file.Sources {
+		if source.Type == EvidenceSourceStaticCheck && matcher.matches(source) {
 			return true
 		}
 	}
@@ -412,6 +473,22 @@ func sourceCompatible(finding Finding, filePath string, source EvidenceSource) b
 	default:
 		return false
 	}
+}
+
+func staticCheckEvidenceContent(item StaticCheckEvidence) string {
+	parts := []string{item.Tool, string(item.ExitCategory), item.Package, item.Message}
+	if item.Line != nil {
+		parts = append(parts, "line "+strconv.Itoa(*item.Line))
+	}
+	return strings.Join(parts, " ")
+}
+
+func staticCheckLineSet(item StaticCheckEvidence) lineSet {
+	lines := lineSet{}
+	if item.Line != nil && *item.Line > 0 {
+		lines[*item.Line] = struct{}{}
+	}
+	return lines
 }
 
 func normalizeEvidenceText(text string) string {
@@ -740,8 +817,12 @@ func (s VerificationStats) String() string {
 	for _, reason := range s.SortedReasons() {
 		reasonParts = append(reasonParts, string(reason)+"="+strconv.Itoa(s.Reasons[reason]))
 	}
+	staticSkipParts := make([]string, 0, len(s.StaticCheckSkipped))
+	for _, category := range s.SortedStaticCheckSkipped() {
+		staticSkipParts = append(staticSkipParts, string(category)+"="+strconv.Itoa(s.StaticCheckSkipped[category]))
+	}
 	return fmt.Sprintf(
-		"total=%d kept=%d downgraded=%d dropped=%d no_findings=%d kept_rate=%.4f downgraded_rate=%.4f dropped_rate=%.4f reasons=%s",
+		"total=%d kept=%d downgraded=%d dropped=%d no_findings=%d kept_rate=%.4f downgraded_rate=%.4f dropped_rate=%.4f static_check_evidence=%d static_check_supported=%d static_check_categories=%s reasons=%s",
 		s.TotalFindings,
 		s.Kept,
 		s.Downgraded,
@@ -750,6 +831,18 @@ func (s VerificationStats) String() string {
 		s.KeptRate,
 		s.DowngradedRate,
 		s.DroppedRate,
+		s.StaticCheckEvidenceCount,
+		s.StaticCheckSupported,
+		strings.Join(staticSkipParts, ","),
 		strings.Join(reasonParts, ","),
 	)
+}
+
+func (s VerificationStats) SortedStaticCheckSkipped() []GoAnalyzerExitCategory {
+	categories := make([]GoAnalyzerExitCategory, 0, len(s.StaticCheckSkipped))
+	for category := range s.StaticCheckSkipped {
+		categories = append(categories, category)
+	}
+	sort.Slice(categories, func(i, j int) bool { return categories[i] < categories[j] })
+	return categories
 }

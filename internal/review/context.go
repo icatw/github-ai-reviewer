@@ -55,6 +55,7 @@ type RepoContext struct {
 	FullFiles    []FileContext
 	RelatedTests []FileContext
 	RepoDocs     []FileContext
+	StaticChecks []StaticCheckEvidence
 	Omitted      []OmittedContext
 }
 

@@ -32,15 +32,24 @@ type LLMClient interface {
 	Review(ctx context.Context, prompt string) (ReviewResult, error)
 }
 
+type Analyzer interface {
+	Analyze(ctx context.Context, job Job, repoContext RepoContext) GoAnalyzerResult
+}
+
 type Service struct {
-	github   GitHubClient
-	llm      LLMClient
-	reporter Reporter
-	logger   *log.Logger
+	github     GitHubClient
+	llm        LLMClient
+	reporter   Reporter
+	logger     *log.Logger
+	goAnalyzer Analyzer
 }
 
 func NewService(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger) *Service {
-	return &Service{github: github, llm: llm, reporter: reporter, logger: logger}
+	return &Service{github: github, llm: llm, reporter: reporter, logger: logger, goAnalyzer: NewGoAnalyzer(nil, nil, GoAnalyzerOptions{})}
+}
+
+func (s *Service) SetGoAnalyzer(analyzer Analyzer) {
+	s.goAnalyzer = analyzer
 }
 
 func (s *Service) Process(ctx context.Context, job Job) error {
@@ -60,6 +69,11 @@ func (s *Service) Process(ctx context.Context, job Job) error {
 		repoContext = BuildRepoContext(ctx, job, files, reader, DefaultContextBudgets)
 	}
 	s.logf("review context built delivery=%s repo=%s/%s pull=%d patches=%d full_files=%d related_tests=%d repo_docs=%d omitted=%d", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, len(repoContext.Patches), len(repoContext.FullFiles), len(repoContext.RelatedTests), len(repoContext.RepoDocs), len(repoContext.Omitted))
+	if s.goAnalyzer != nil {
+		analyzerResult := s.goAnalyzer.Analyze(ctx, job, repoContext)
+		repoContext.StaticChecks = append(repoContext.StaticChecks, analyzerResult.Evidence...)
+		s.logAnalyzerStats(job, analyzerResult.Stats)
+	}
 	result, err := s.llm.Review(ctx, BuildPromptWithContext(job, repoContext))
 	if err != nil {
 		category := reviewErrorCategory(err)
@@ -128,6 +142,10 @@ func (s *Service) logReporterError(event string, job Job, err error) {
 
 func (s *Service) logVerificationStats(job Job, stats VerificationStats) {
 	s.logf("finding verification completed delivery=%s repo=%s/%s pull=%d %s", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, stats.String())
+}
+
+func (s *Service) logAnalyzerStats(job Job, stats GoAnalyzerStats) {
+	s.logf("go analyzer completed delivery=%s repo=%s/%s pull=%d %s", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, stats.String())
 }
 
 func reviewErrorCategory(err error) string {

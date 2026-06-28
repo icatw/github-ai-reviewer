@@ -308,6 +308,85 @@ func TestVerifierEvalFixtures(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "static check evidence supports matching finding",
+			context: RepoContext{
+				StaticChecks: []StaticCheckEvidence{{
+					SourceType:   EvidenceSourceStaticCheck,
+					Tool:         "go vet",
+					ExitCategory: GoAnalyzerExitFailure,
+					Path:         "internal/app.go",
+					Line:         &line2,
+					Message:      "fmt.Println call has possible formatting directive %s",
+				}},
+			},
+			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{{
+				Severity:        "warning",
+				Category:        "bug",
+				File:            "internal/app.go",
+				Line:            &line2,
+				Title:           "Formatting directive is ignored",
+				Evidence:        "fmt.Println call has possible formatting directive %s",
+				FailureScenario: "The intended value is not formatted into the output.",
+				Suggestion:      "Use fmt.Printf or remove the directive.",
+			}}},
+			wantFindings: []wantVerifiedFinding{{Severity: "warning", File: "internal/app.go", Evidence: "fmt.Println call has possible formatting directive %s"}},
+			wantStats: VerificationStats{
+				TotalFindings:            1,
+				Kept:                     1,
+				KeptRate:                 1,
+				StaticCheckEvidenceCount: 1,
+				StaticCheckSupported:     1,
+				StaticCheckSkipped:       map[GoAnalyzerExitCategory]int{GoAnalyzerExitFailure: 1},
+				Reasons:                  map[VerificationReason]int{VerificationReasonSupported: 1},
+			},
+		},
+		{
+			name: "unrelated static check evidence cannot support finding",
+			context: RepoContext{
+				StaticChecks: []StaticCheckEvidence{{
+					SourceType:   EvidenceSourceStaticCheck,
+					Tool:         "go test",
+					ExitCategory: GoAnalyzerExitFailure,
+					Path:         "internal/other.go",
+					Message:      "undefined: otherSymbol",
+				}},
+			},
+			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{
+				findingFixture("warning", "internal/app.go", nil, "undefined: otherSymbol"),
+			}},
+			wantStats: VerificationStats{
+				TotalFindings:            1,
+				Dropped:                  1,
+				DroppedRate:              1,
+				StaticCheckEvidenceCount: 1,
+				StaticCheckSkipped:       map[GoAnalyzerExitCategory]int{GoAnalyzerExitFailure: 1},
+				Reasons:                  map[VerificationReason]int{VerificationReasonUnavailableFile: 1},
+			},
+		},
+		{
+			name: "generic static check overlap is insufficient",
+			context: RepoContext{
+				StaticChecks: []StaticCheckEvidence{{
+					SourceType:   EvidenceSourceStaticCheck,
+					Tool:         "go test",
+					ExitCategory: GoAnalyzerExitFailure,
+					Path:         "internal/app.go",
+					Message:      "test failed with error",
+				}},
+			},
+			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{
+				findingFixture("warning", "internal/app.go", nil, "test error"),
+			}},
+			wantStats: VerificationStats{
+				TotalFindings:            1,
+				Dropped:                  1,
+				DroppedRate:              1,
+				StaticCheckEvidenceCount: 1,
+				StaticCheckSkipped:       map[GoAnalyzerExitCategory]int{GoAnalyzerExitFailure: 1},
+				Reasons:                  map[VerificationReason]int{VerificationReasonUnsupportedEvidence: 1},
+			},
+		},
 	}
 
 	for _, fixture := range fixtures {
@@ -516,6 +595,9 @@ func assertVerificationStats(t *testing.T, got VerificationStats, want Verificat
 		got.KeptRate != want.KeptRate ||
 		got.DowngradedRate != want.DowngradedRate ||
 		got.DroppedRate != want.DroppedRate ||
+		got.StaticCheckEvidenceCount != want.StaticCheckEvidenceCount ||
+		got.StaticCheckSupported != want.StaticCheckSupported ||
+		!reflect.DeepEqual(got.StaticCheckSkipped, want.StaticCheckSkipped) ||
 		!reflect.DeepEqual(got.Reasons, want.Reasons) {
 		t.Fatalf("stats = %+v, want %+v", got, want)
 	}

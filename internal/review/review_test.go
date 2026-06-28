@@ -108,6 +108,89 @@ func TestServiceReportsVerifiedResultInsteadOfRawLLMResult(t *testing.T) {
 	}
 }
 
+func TestServiceUsesStaticCheckEvidenceBeforeVerification(t *testing.T) {
+	gh := &fakeGitHub{
+		files:    []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1,2 +1,2 @@\n package main\n+fmt.Println(\"%s\", name)\n"}},
+		contents: map[string]string{"main.go": "package main\nfunc main() { fmt.Println(\"%s\", name) }\n"},
+	}
+	llm := &fakeLLM{result: ReviewResult{
+		Summary: "Found issues.",
+		Findings: []Finding{{
+			Severity:        "warning",
+			Category:        "bug",
+			File:            "main.go",
+			Title:           "Formatting directive is not applied",
+			Evidence:        "fmt.Println call has possible formatting directive %s",
+			FailureScenario: "The output contains the literal directive instead of the value.",
+			Suggestion:      "Use fmt.Printf.",
+		}},
+	}}
+	reporter := &fakeReporter{}
+	analyzer := &fakeAnalyzer{result: GoAnalyzerResult{
+		Evidence: []StaticCheckEvidence{{
+			SourceType:   EvidenceSourceStaticCheck,
+			Tool:         "go vet",
+			ExitCategory: GoAnalyzerExitFailure,
+			Path:         "main.go",
+			Message:      "fmt.Println call has possible formatting directive %s",
+		}},
+		Stats: GoAnalyzerStats{ExitCategories: map[GoAnalyzerExitCategory]int{GoAnalyzerExitFailure: 1}},
+	}}
+	svc := NewService(gh, llm, reporter, nil)
+	svc.SetGoAnalyzer(analyzer)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if !analyzer.called {
+		t.Fatal("analyzer was not called")
+	}
+	if reporter.completed != 1 || len(reporter.result.Findings) != 1 {
+		t.Fatalf("reported result = %+v completed=%d", reporter.result, reporter.completed)
+	}
+}
+
+func TestServiceAnalyzerFailureAndTimeoutAreNonBlocking(t *testing.T) {
+	for _, category := range []GoAnalyzerExitCategory{GoAnalyzerExitInternalError, GoAnalyzerExitTimeout} {
+		t.Run(string(category), func(t *testing.T) {
+			gh := &fakeGitHub{files: []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+return nil\n"}}}
+			llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
+			reporter := &fakeReporter{}
+			svc := NewService(gh, llm, reporter, nil)
+			svc.SetGoAnalyzer(&fakeAnalyzer{result: GoAnalyzerResult{
+				Limitations: []string{"Go analyzer recorded " + string(category)},
+				Stats:       GoAnalyzerStats{ExitCategories: map[GoAnalyzerExitCategory]int{category: 1}},
+			}})
+
+			if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+				t.Fatalf("Process() error = %v", err)
+			}
+			if llm.prompt == "" || reporter.completed != 1 || reporter.failed != 0 {
+				t.Fatalf("pipeline blocked: llm=%+v reporter=%+v", llm, reporter)
+			}
+		})
+	}
+}
+
+func TestServiceDefaultAnalyzerSkipsUnsafeWorkspaceWithoutBlocking(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+return nil\n"}}}
+	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, logger)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc", DeliveryID: "d1"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if reporter.completed != 1 || reporter.failed != 0 {
+		t.Fatalf("reporter = %+v", reporter)
+	}
+	if !strings.Contains(buf.String(), "go analyzer completed") || !strings.Contains(buf.String(), "skipped=1") {
+		t.Fatalf("log line = %q", buf.String())
+	}
+}
+
 func TestServiceLogsSafeVerificationStats(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
@@ -397,4 +480,14 @@ func (f *fakeReporter) JobFailed(ctx context.Context, job Job, failure Failure) 
 	f.job = job
 	f.failure = failure
 	return nil
+}
+
+type fakeAnalyzer struct {
+	result GoAnalyzerResult
+	called bool
+}
+
+func (f *fakeAnalyzer) Analyze(context.Context, Job, RepoContext) GoAnalyzerResult {
+	f.called = true
+	return f.result
 }
