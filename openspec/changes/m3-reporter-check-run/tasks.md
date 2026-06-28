@@ -38,6 +38,6 @@
 - [x] 6.2 Run `go test ./...`.
 - [x] 6.3 Run `go build ./cmd/server`.
 - [x] 6.4 Run `openspec validate m3-reporter-check-run --type change --strict`.
-- [ ] 6.5 Deploy or restart the service with a GitHub App that has Checks read/write permission.
-- [ ] 6.6 Verify on a real PR that the Checks UI or GitHub API shows an `AI Review` Check Run for the PR head SHA.
-- [ ] 6.7 Verify on the same real PR that the summary comment is still upserted through the M2 marker and repeated supported PR events do not create duplicate bot comments.
+- [x] 6.5 Deploy or restart the service with a GitHub App that has Checks read/write permission.
+- [x] 6.6 Verify on a real PR that the Checks UI or GitHub API shows an `AI Review` Check Run for the PR head SHA.
+- [x] 6.7 Verify on the same real PR that the summary comment is still upserted through the M2 marker and repeated supported PR events do not create duplicate bot comments.
