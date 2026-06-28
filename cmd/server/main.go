@@ -31,7 +31,11 @@ func main() {
 	}
 	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, nil)
 	publisher := comment.NewPublisher(gh)
-	reviewSvc := review.NewService(gh, llmClient, publisher, logger)
+	reporters := review.MultiReporter{
+		comment.NewReporter(publisher),
+		review.NewCheckRunReporter(gh),
+	}
+	reviewSvc := review.NewService(gh, llmClient, reporters, logger)
 	w := worker.New(reviewSvc, logger)
 	w.Start(context.Background())
 

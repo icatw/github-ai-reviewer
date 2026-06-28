@@ -15,8 +15,8 @@ func TestServiceProcessesJobEndToEnd(t *testing.T) {
 	}
 	risk := 10
 	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused.", RiskScore: &risk}}
-	comments := &fakeComments{}
-	svc := NewService(gh, llm, comments, nil)
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
 
 	job := Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc", Action: "opened", DeliveryID: "d1"}
 	if err := svc.Process(context.Background(), job); err != nil {
@@ -25,37 +25,55 @@ func TestServiceProcessesJobEndToEnd(t *testing.T) {
 	if gh.installationID != 42 || gh.owner != "octo" || gh.repo != "repo" || gh.pullNumber != 7 {
 		t.Fatalf("github fake = %+v", gh)
 	}
-	if llm.prompt == "" || comments.result.Summary == "" || comments.installationID != 42 || comments.number != 7 {
-		t.Fatalf("llm/comment fakes not called: %+v %+v", llm, comments)
+	if llm.prompt == "" || reporter.result.Summary == "" || reporter.started != 1 || reporter.completed != 1 || reporter.job.InstallationID != 42 {
+		t.Fatalf("llm/reporter fakes not called: %+v %+v", llm, reporter)
+	}
+}
+
+func TestServiceReportsInfrastructureFailure(t *testing.T) {
+	gh := &fakeGitHub{err: errors.New("github failed")}
+	llm := &fakeLLM{}
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
+
+	err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7})
+	if err == nil {
+		t.Fatal("Process() error = nil")
+	}
+	if reporter.started != 1 || reporter.failed != 1 || reporter.failure.Category != FailureCategoryGitHub {
+		t.Fatalf("reporter = %+v", reporter)
+	}
+	if llm.prompt != "" {
+		t.Fatalf("llm should not run, prompt = %q", llm.prompt)
 	}
 }
 
 func TestServiceStopsBeforeLLMWhenGitHubFails(t *testing.T) {
 	gh := &fakeGitHub{err: errors.New("token exchange failed")}
 	llm := &fakeLLM{}
-	comments := &fakeComments{}
-	svc := NewService(gh, llm, comments, nil)
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
 
 	err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7})
 	if err == nil {
 		t.Fatal("Process() error = nil")
 	}
-	if llm.prompt != "" || comments.result.HasUsefulContent() {
-		t.Fatalf("downstream should not run: %+v %+v", llm, comments)
+	if llm.prompt != "" || reporter.completed != 0 || reporter.failed != 1 {
+		t.Fatalf("downstream should not run: %+v %+v", llm, reporter)
 	}
 }
 
 func TestServiceSuppressesEmptyLLMOutput(t *testing.T) {
 	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go"}}}
 	llm := &fakeLLM{result: ReviewResult{}}
-	comments := &fakeComments{}
-	svc := NewService(gh, llm, comments, nil)
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
 
 	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7}); err != nil {
 		t.Fatalf("Process() error = %v", err)
 	}
-	if comments.result.HasUsefulContent() {
-		t.Fatalf("comment should be suppressed, got %+v", comments.result)
+	if reporter.suppressed != 1 || reporter.completed != 0 {
+		t.Fatalf("reporter = %+v", reporter)
 	}
 }
 
@@ -64,15 +82,15 @@ func TestServiceStopsWithoutPublishingWhenLLMParseFails(t *testing.T) {
 	logger := log.New(&buf, "", 0)
 	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go"}}}
 	llm := &fakeLLM{err: ErrMalformedResult}
-	comments := &fakeComments{}
-	svc := NewService(gh, llm, comments, logger)
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, logger)
 
 	err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, DeliveryID: "d1"})
 	if !errors.Is(err, ErrMalformedResult) {
 		t.Fatalf("Process() error = %v, want ErrMalformedResult", err)
 	}
-	if comments.result.HasUsefulContent() {
-		t.Fatalf("comment should not publish, got %+v", comments.result)
+	if reporter.completed != 0 || reporter.failed != 1 || reporter.failure.Category != FailureCategoryLLM {
+		t.Fatalf("reporter = %+v", reporter)
 	}
 	if !strings.Contains(buf.String(), "stage=llm") || !strings.Contains(buf.String(), "category=malformed_result") {
 		t.Fatalf("log line = %q", buf.String())
@@ -82,34 +100,60 @@ func TestServiceStopsWithoutPublishingWhenLLMParseFails(t *testing.T) {
 func TestServiceStopsWithoutPublishingWhenValidationFails(t *testing.T) {
 	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go"}}}
 	llm := &fakeLLM{err: ErrInvalidSeverity}
-	comments := &fakeComments{}
-	svc := NewService(gh, llm, comments, nil)
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
 
 	err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7})
 	if !errors.Is(err, ErrInvalidSeverity) {
 		t.Fatalf("Process() error = %v, want ErrInvalidSeverity", err)
 	}
-	if comments.result.HasUsefulContent() {
-		t.Fatalf("comment should not publish, got %+v", comments.result)
+	if reporter.completed != 0 || reporter.failed != 1 {
+		t.Fatalf("reporter = %+v", reporter)
 	}
 }
 
-func TestServiceReturnsCommentPublishFailure(t *testing.T) {
+func TestServiceLogsReporterPublishFailureWithoutFailingJob(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
 	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go"}}}
 	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
-	comments := &fakeComments{err: errors.New("comment failed")}
-	svc := NewService(gh, llm, comments, nil)
+	reporter := &fakeReporter{completeErr: errors.New("reporter failed")}
+	svc := NewService(gh, llm, reporter, logger)
 
-	err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7})
-	if err == nil || err.Error() != "comment failed" {
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, DeliveryID: "d1"}); err != nil {
 		t.Fatalf("Process() error = %v", err)
+	}
+	if reporter.completed != 1 {
+		t.Fatalf("reporter = %+v", reporter)
+	}
+	if !strings.Contains(buf.String(), "review reporter failed event=review_completed") {
+		t.Fatalf("log line = %q", buf.String())
+	}
+}
+
+func TestServiceContinuesWhenJobStartedReporterFails(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go"}}}
+	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
+	reporter := &fakeReporter{startedErr: errors.New("check run permission denied")}
+	svc := NewService(gh, llm, reporter, logger)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, DeliveryID: "d1"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if gh.pullNumber != 7 || llm.prompt == "" || reporter.completed != 1 {
+		t.Fatalf("process did not continue: gh=%+v llm=%+v reporter=%+v", gh, llm, reporter)
+	}
+	if !strings.Contains(buf.String(), "review reporter failed event=job_started") {
+		t.Fatalf("log line = %q", buf.String())
 	}
 }
 
 func TestServiceLogsDownstreamErrorDetails(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	svc := NewService(&fakeGitHub{files: []FileChange{{Filename: "main.go"}}}, &fakeLLM{err: errors.New("llm request failed: status 401")}, &fakeComments{}, logger)
+	svc := NewService(&fakeGitHub{files: []FileChange{{Filename: "main.go"}}}, &fakeLLM{err: errors.New("llm request failed: status 401")}, &fakeReporter{}, logger)
 
 	err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, DeliveryID: "d1"})
 	if err == nil {
@@ -160,4 +204,45 @@ type fakeComments struct {
 func (f *fakeComments) Publish(ctx context.Context, installationID int64, owner, repo string, number int, result ReviewResult) error {
 	f.installationID, f.owner, f.repo, f.number, f.result = installationID, owner, repo, number, result
 	return f.err
+}
+
+type fakeReporter struct {
+	started     int
+	completed   int
+	suppressed  int
+	failed      int
+	job         Job
+	result      ReviewResult
+	failure     Failure
+	startedErr  error
+	completeErr error
+}
+
+func (f *fakeReporter) Name() string { return "fake" }
+
+func (f *fakeReporter) JobStarted(ctx context.Context, job Job) error {
+	f.started++
+	f.job = job
+	return f.startedErr
+}
+
+func (f *fakeReporter) ReviewCompleted(ctx context.Context, job Job, result ReviewResult) error {
+	f.completed++
+	f.job = job
+	f.result = result
+	return f.completeErr
+}
+
+func (f *fakeReporter) OutputSuppressed(ctx context.Context, job Job, result ReviewResult) error {
+	f.suppressed++
+	f.job = job
+	f.result = result
+	return nil
+}
+
+func (f *fakeReporter) JobFailed(ctx context.Context, job Job, failure Failure) error {
+	f.failed++
+	f.job = job
+	f.failure = failure
+	return nil
 }

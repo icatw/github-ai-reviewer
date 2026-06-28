@@ -34,39 +34,47 @@ type LLMClient interface {
 	Review(ctx context.Context, prompt string) (ReviewResult, error)
 }
 
-type CommentPublisher interface {
-	Publish(ctx context.Context, installationID int64, owner, repo string, number int, result ReviewResult) error
-}
-
 type Service struct {
 	github   GitHubClient
 	llm      LLMClient
-	comments CommentPublisher
+	reporter Reporter
 	logger   *log.Logger
 }
 
-func NewService(github GitHubClient, llm LLMClient, comments CommentPublisher, logger *log.Logger) *Service {
-	return &Service{github: github, llm: llm, comments: comments, logger: logger}
+func NewService(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger) *Service {
+	return &Service{github: github, llm: llm, reporter: reporter, logger: logger}
 }
 
 func (s *Service) Process(ctx context.Context, job Job) error {
+	if err := s.reportJobStarted(ctx, job); err != nil {
+		s.logReporterError("job_started", job, err)
+	}
 	files, err := s.github.FetchPullRequestFiles(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber)
 	if err != nil {
 		s.logf("review job failed at github files delivery=%s repo=%s/%s pull=%d error=%v", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
+		if reportErr := s.reportJobFailed(ctx, job, Failure{Category: FailureCategoryGitHub, Message: "fetch_pull_request_files"}); reportErr != nil {
+			s.logReporterError("job_failed", job, reportErr)
+		}
 		return err
 	}
 	result, err := s.llm.Review(ctx, BuildPrompt(job, files, 12000))
 	if err != nil {
-		s.logf("review job failed stage=llm category=%s delivery=%s repo=%s/%s pull=%d error=%v", reviewErrorCategory(err), job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
+		category := reviewErrorCategory(err)
+		s.logf("review job failed stage=llm category=%s delivery=%s repo=%s/%s pull=%d error=%v", category, job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
+		if reportErr := s.reportJobFailed(ctx, job, Failure{Category: FailureCategoryLLM, Message: category}); reportErr != nil {
+			s.logReporterError("job_failed", job, reportErr)
+		}
 		return err
 	}
 	if !result.HasUsefulContent() {
 		s.logf("review job suppressed empty result delivery=%s repo=%s/%s pull=%d", job.DeliveryID, job.Owner, job.Repo, job.PullNumber)
+		if err := s.reportOutputSuppressed(ctx, job, result); err != nil {
+			s.logReporterError("output_suppressed", job, err)
+		}
 		return nil
 	}
-	if err := s.comments.Publish(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber, result); err != nil {
-		s.logf("review job failed at comment delivery=%s repo=%s/%s pull=%d error=%v", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
-		return err
+	if err := s.reportReviewCompleted(ctx, job, result); err != nil {
+		s.logReporterError("review_completed", job, err)
 	}
 	return nil
 }
@@ -112,6 +120,38 @@ func (s *Service) logf(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Printf(format, args...)
 	}
+}
+
+func (s *Service) reportJobStarted(ctx context.Context, job Job) error {
+	if s.reporter == nil {
+		return nil
+	}
+	return s.reporter.JobStarted(ctx, job)
+}
+
+func (s *Service) reportReviewCompleted(ctx context.Context, job Job, result ReviewResult) error {
+	if s.reporter == nil {
+		return nil
+	}
+	return s.reporter.ReviewCompleted(ctx, job, result)
+}
+
+func (s *Service) reportOutputSuppressed(ctx context.Context, job Job, result ReviewResult) error {
+	if s.reporter == nil {
+		return nil
+	}
+	return s.reporter.OutputSuppressed(ctx, job, result)
+}
+
+func (s *Service) reportJobFailed(ctx context.Context, job Job, failure Failure) error {
+	if s.reporter == nil {
+		return nil
+	}
+	return s.reporter.JobFailed(ctx, job, failure)
+}
+
+func (s *Service) logReporterError(event string, job Job, err error) {
+	s.logf("review reporter failed event=%s delivery=%s repo=%s/%s pull=%d error=%v", event, job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
 }
 
 func reviewErrorCategory(err error) string {

@@ -162,8 +162,16 @@ MVP 可以先输出 Markdown，但建议尽早切换到 JSON schema：
 
 - 把结构化 review result 渲染成 GitHub Markdown。
 - 发布 PR 普通评论。
-- 后续发布 inline review comments。
-- 后续创建和更新 Check Run。
+- 通过稳定隐藏 marker 更新已有 AI Review summary comment，避免重复刷屏。
+
+### reporter 模块
+
+职责：
+
+- 接收 review job started、completed、suppressed、failed 生命周期事件。
+- 将同一份结构化 review result fan-out 到多个输出通道。
+- 保留 PR summary comment 输出，并新增 `AI Review` Check Run 输出。
+- Check Run 完成态使用 advisory/non-blocking policy：正常完成设置为 `neutral`，即使存在 finding；只有 GitHub API、LLM provider、reporter 或 job execution 等基础设施失败才可以设置为 `failure`。
 
 MVP 使用：
 
@@ -171,26 +179,28 @@ MVP 使用：
 POST /repos/{owner}/{repo}/issues/{pull_number}/comments
 ```
 
-后续使用：
+M3 使用：
 
 ```text
-POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews
 POST /repos/{owner}/{repo}/check-runs
 PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}
 ```
 
+Inline review comments 和 request-changes 行为不属于 M3。
+
 ## 权限设计
 
-GitHub App 最小权限：
+M3 GitHub App 最小权限：
 
 ```text
 Metadata: Read-only
 Contents: Read-only
 Pull requests: Read and write
 Issues: Read and write
+Checks: Read and write
 ```
 
-后续接入 Check Run 时增加：
+M1/M2 如果不启用 Check Run，可以暂不申请：
 
 ```text
 Checks: Read and write
@@ -214,6 +224,13 @@ MVP 阶段：
 - 不发布大量 inline comments。
 - 评论中明确区分 summary、risk、suggestion。
 - 要求模型基于给定 diff 输出，不允许臆测不存在的文件。
+
+M3 Check Run 阶段：
+
+- `AI Review` Check Run 用于展示 review lifecycle，不作为 merge gate。
+- 完成的 AI review job 设置 `neutral`，即使存在 blocker、warning、suggestion 或 question finding。
+- `failure` 只表示服务执行失败，例如 GitHub API、LLM provider、reporter 或 job execution failure；不能由 AI finding severity 推导。
+- Check Run output 保持简短，不包含 raw prompt、raw model response、完整 webhook payload、installation token、API key、private key 或无边界 diff 内容。
 
 增强阶段：
 
@@ -252,11 +269,12 @@ question：上下文不足，需要人确认。
 - 渲染稳定的 Markdown 评论。
 - 控制评论长度和噪声。
 
-### M3：Check Run 和 Inline Review
+### M3：Check Run Reporter
 
-- 创建 Check Run。
-- 根据 review 结果更新 success / neutral / failure。
-- 对高置信度问题发布 inline comments。
+- 创建或更新 `AI Review` Check Run。
+- review 开始时上报 `in_progress`。
+- review 正常完成时上报 `completed` / `neutral`。
+- 基础设施或 job execution failure 可上报 `completed` / `failure`，但不能基于 AI findings fail check。
 - synchronize 后更新旧评论，避免刷屏。
 
 ### M4：仓库上下文
@@ -297,8 +315,8 @@ M2 验证标准：
 M3 验证标准：
 
 - PR Checks 区出现 AI Review 状态。
-- inline comment 能准确落到 diff 行。
-- 重复 push 不产生大量重复评论。
+- AI findings 不会导致 Check Run failure 或 request changes。
+- 重复 push 不产生大量重复 summary comments。
 
 M4-M5 验证标准：
 

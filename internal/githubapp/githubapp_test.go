@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github-ai-reviewer/internal/review"
 )
 
 func TestGenerateJWT(t *testing.T) {
@@ -114,6 +116,120 @@ func TestClientListsAndUpdatesIssueComments(t *testing.T) {
 	}
 	if !sawList || !sawPatch {
 		t.Fatalf("sawList=%v sawPatch=%v", sawList, sawPatch)
+	}
+}
+
+func TestClientCreatesListsAndUpdatesCheckRuns(t *testing.T) {
+	key := testPrivateKey(t)
+	var sawList, sawCreate, sawUpdate bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/commits/abc/check-runs":
+			sawList = r.Header.Get("Authorization") == "Bearer installation-token" && r.URL.Query().Get("check_name") == "AI Review"
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []map[string]any{{
+				"id":       22,
+				"name":     "AI Review",
+				"head_sha": "abc",
+			}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/octo/repo/check-runs":
+			sawCreate = r.Header.Get("Authorization") == "Bearer installation-token"
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req["name"] != "AI Review" || req["head_sha"] != "abc" || req["status"] != "in_progress" {
+				t.Fatalf("create request = %+v", req)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 23, "name": "AI Review", "head_sha": "abc"})
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/octo/repo/check-runs/23":
+			sawUpdate = r.Header.Get("Authorization") == "Bearer installation-token"
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req["status"] != "completed" || req["conclusion"] != "neutral" {
+				t.Fatalf("update request = %+v", req)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 23})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	runs, err := client.ListCheckRuns(context.Background(), 42, "octo", "repo", "abc")
+	if err != nil {
+		t.Fatalf("ListCheckRuns() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != 22 || runs[0].Name != "AI Review" || runs[0].HeadSHA != "abc" {
+		t.Fatalf("runs = %+v", runs)
+	}
+	run, err := client.CreateCheckRun(context.Background(), 42, "octo", "repo", review.CheckRunCreateRequest{
+		Name:    "AI Review",
+		HeadSHA: "abc",
+		Status:  "in_progress",
+		Output:  review.CheckRunOutput{Title: "title", Summary: "summary"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCheckRun() error = %v", err)
+	}
+	if run.ID != 23 || run.Name != "AI Review" || run.HeadSHA != "abc" {
+		t.Fatalf("run = %+v", run)
+	}
+	if err := client.UpdateCheckRun(context.Background(), 42, "octo", "repo", 23, review.CheckRunUpdateRequest{
+		Status:     "completed",
+		Conclusion: "neutral",
+		Output:     review.CheckRunOutput{Title: "title", Summary: "summary"},
+	}); err != nil {
+		t.Fatalf("UpdateCheckRun() error = %v", err)
+	}
+	if !sawList || !sawCreate || !sawUpdate {
+		t.Fatalf("sawList=%v sawCreate=%v sawUpdate=%v", sawList, sawCreate, sawUpdate)
+	}
+}
+
+func TestClientCreatesCompletedCheckRunWithConclusion(t *testing.T) {
+	key := testPrivateKey(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/octo/repo/check-runs":
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req["status"] != "completed" || req["conclusion"] != "neutral" {
+				t.Fatalf("create request = %+v", req)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 23, "name": "AI Review", "head_sha": "abc"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.CreateCheckRun(context.Background(), 42, "octo", "repo", review.CheckRunCreateRequest{
+		Name:       "AI Review",
+		HeadSHA:    "abc",
+		Status:     "completed",
+		Conclusion: "neutral",
+		Output:     review.CheckRunOutput{Title: "title", Summary: "summary"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCheckRun() error = %v", err)
 	}
 }
 

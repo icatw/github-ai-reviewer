@@ -63,7 +63,7 @@ MVP 暂不包含：
 MVP 跑通后，后续按优先级增加：
 
 - GitHub Check Run：在 PR Checks 区显示 AI Review 状态。
-- Inline Review Comment：对高置信度问题评论到具体代码行。
+- Inline Review Comment：在后续阶段对高置信度问题评论到具体代码行。
 - Finding Verifier：对 LLM 生成的问题做二次证据校验。
 - Severity Policy：按 blocker、warning、suggestion、question 分级。
 - 仓库配置文件：支持 `.github/ai-review.yml`。
@@ -123,6 +123,8 @@ LLM_API_KEY                   模型 API Key
 LLM_MODEL                     模型名称
 DATABASE_PATH                 SQLite 数据库路径
 ```
+
+M3 Check Run 状态上报还要求 GitHub App 增加 `Checks: Read and write` 权限；PR conversation summary comment 仍然需要 `Issues: Read and write` 权限。
 
 ## 开发目标
 

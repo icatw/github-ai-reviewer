@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -124,6 +125,59 @@ func (c *Client) UpdateIssueComment(ctx context.Context, installationID int64, o
 	return c.doJSON(ctx, http.MethodPatch, path, token, map[string]string{"body": body}, nil, http.StatusOK)
 }
 
+func (c *Client) ListCheckRuns(ctx context.Context, installationID int64, owner, repo, ref string) ([]review.CheckRun, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?check_name=%s", owner, repo, ref, urlQueryEscape(review.CheckRunName))
+	var out struct {
+		CheckRuns []githubCheckRun `json:"check_runs"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	runs := make([]review.CheckRun, 0, len(out.CheckRuns))
+	for _, run := range out.CheckRuns {
+		runs = append(runs, review.CheckRun{ID: run.ID, Name: run.Name, HeadSHA: run.HeadSHA})
+	}
+	return runs, nil
+}
+
+func (c *Client) CreateCheckRun(ctx context.Context, installationID int64, owner, repo string, req review.CheckRunCreateRequest) (review.CheckRun, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return review.CheckRun{}, err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/check-runs", owner, repo)
+	var out githubCheckRun
+	in := githubCheckRunRequest{
+		Name:       req.Name,
+		HeadSHA:    req.HeadSHA,
+		Status:     req.Status,
+		Conclusion: req.Conclusion,
+		Output:     githubCheckRunOutput(req.Output),
+	}
+	if err := c.doJSON(ctx, http.MethodPost, path, token, in, &out, http.StatusCreated); err != nil {
+		return review.CheckRun{}, err
+	}
+	return review.CheckRun{ID: out.ID, Name: out.Name, HeadSHA: out.HeadSHA}, nil
+}
+
+func (c *Client) UpdateCheckRun(ctx context.Context, installationID int64, owner, repo string, id int64, req review.CheckRunUpdateRequest) error {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d", owner, repo, id)
+	in := githubCheckRunRequest{
+		Status:     req.Status,
+		Conclusion: req.Conclusion,
+		Output:     githubCheckRunOutput(req.Output),
+	}
+	return c.doJSON(ctx, http.MethodPatch, path, token, in, nil, http.StatusOK)
+}
+
 func (c *Client) installationToken(ctx context.Context, installationID int64) (string, error) {
 	c.tokenLock.Lock()
 	if token := c.tokens[installationID]; token != "" {
@@ -224,4 +278,27 @@ type githubIssueComment struct {
 
 type githubUser struct {
 	Type string `json:"type"`
+}
+
+type githubCheckRun struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	HeadSHA string `json:"head_sha"`
+}
+
+type githubCheckRunRequest struct {
+	Name       string               `json:"name,omitempty"`
+	HeadSHA    string               `json:"head_sha,omitempty"`
+	Status     string               `json:"status,omitempty"`
+	Conclusion string               `json:"conclusion,omitempty"`
+	Output     githubCheckRunOutput `json:"output,omitempty"`
+}
+
+type githubCheckRunOutput struct {
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
+func urlQueryEscape(value string) string {
+	return url.QueryEscape(value)
 }
