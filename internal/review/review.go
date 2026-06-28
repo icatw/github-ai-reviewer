@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"strconv"
-	"strings"
 )
 
 type Job struct {
@@ -129,11 +127,7 @@ func (s *Service) logReporterError(event string, job Job, err error) {
 }
 
 func (s *Service) logVerificationStats(job Job, stats VerificationStats) {
-	reasonParts := make([]string, 0, len(stats.Reasons))
-	for _, reason := range stats.SortedReasons() {
-		reasonParts = append(reasonParts, string(reason)+"="+strconv.Itoa(stats.Reasons[reason]))
-	}
-	s.logf("finding verification completed delivery=%s repo=%s/%s pull=%d total=%d kept=%d downgraded=%d dropped=%d reasons=%s", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, stats.TotalFindings, stats.Kept, stats.Downgraded, stats.Dropped, strings.Join(reasonParts, ","))
+	s.logf("finding verification completed delivery=%s repo=%s/%s pull=%d %s", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, stats.String())
 }
 
 func reviewErrorCategory(err error) string {

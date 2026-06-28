@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 type VerificationOutcome string
@@ -33,11 +35,15 @@ const (
 )
 
 type VerificationStats struct {
-	TotalFindings int
-	Kept          int
-	Downgraded    int
-	Dropped       int
-	Reasons       map[VerificationReason]int
+	TotalFindings  int
+	Kept           int
+	Downgraded     int
+	Dropped        int
+	NoFindingCount int
+	KeptRate       float64
+	DowngradedRate float64
+	DroppedRate    float64
+	Reasons        map[VerificationReason]int
 }
 
 type EvidenceSource struct {
@@ -67,6 +73,7 @@ func VerifyReviewResult(raw ReviewResult, repoContext RepoContext) (ReviewResult
 		Reasons:       map[VerificationReason]int{},
 	}
 	if len(raw.Findings) == 0 {
+		stats.NoFindingCount = 1
 		stats.Reasons[VerificationReasonNoFindings] = 1
 		return verified, stats
 	}
@@ -86,7 +93,18 @@ func VerifyReviewResult(raw ReviewResult, repoContext RepoContext) (ReviewResult
 			stats.Dropped++
 		}
 	}
+	stats.computeRates()
 	return verified, stats
+}
+
+func (s *VerificationStats) computeRates() {
+	if s.TotalFindings <= 0 {
+		return
+	}
+	total := float64(s.TotalFindings)
+	s.KeptRate = float64(s.Kept) / total
+	s.DowngradedRate = float64(s.Downgraded) / total
+	s.DroppedRate = float64(s.Dropped) / total
 }
 
 func BuildEvidenceIndex(ctx RepoContext) EvidenceIndex {
@@ -230,26 +248,374 @@ func evidenceSupportedAnyPath(finding Finding, index EvidenceIndex) bool {
 }
 
 func evidenceSupportedForFile(finding Finding, file *indexedFile) bool {
-	needle := normalizeEvidenceText(finding.Evidence)
-	if needle == "" {
+	matcher := newEvidenceMatcher(finding, file.Path)
+	if matcher.normalizedEvidence == "" {
 		return false
 	}
 	for _, source := range file.Sources {
-		if normalizeEvidenceContains(source.Content, needle) {
+		if !sourceCompatible(finding, file.Path, source) {
+			continue
+		}
+		if matcher.matches(source) {
 			return true
 		}
 	}
 	return false
 }
 
-func normalizeEvidenceContains(content, normalizedNeedle string) bool {
-	haystack := normalizeEvidenceText(content)
-	return haystack != "" && strings.Contains(haystack, normalizedNeedle)
+type evidenceMatcher struct {
+	finding            Finding
+	filePath           string
+	normalizedEvidence string
+	claimText          string
+	evidenceTokens     map[string]struct{}
+	claimTokens        map[string]struct{}
+	meaningfulTokens   map[string]struct{}
+	strongSignals      map[string]struct{}
+	shortEvidence      bool
+}
+
+func newEvidenceMatcher(finding Finding, filePath string) evidenceMatcher {
+	normalizedEvidence := normalizeEvidenceText(finding.Evidence)
+	claimText := normalizeEvidenceText(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.FailureScenario,
+		finding.Suggestion,
+		path.Base(filePath),
+	}, " "))
+	evidenceTokens := tokenSet(finding.Evidence)
+	claimTokens := tokenSet(claimText)
+	meaningful := meaningfulTokenSet(evidenceTokens)
+	strong := strongSignalSet(finding.Evidence, filePath)
+	for token := range meaningfulTokenSet(tokenSet(finding.Title)) {
+		if _, inEvidence := meaningful[token]; inEvidence {
+			strong[token] = struct{}{}
+		}
+	}
+	return evidenceMatcher{
+		finding:            finding,
+		filePath:           filePath,
+		normalizedEvidence: normalizedEvidence,
+		claimText:          claimText,
+		evidenceTokens:     evidenceTokens,
+		claimTokens:        claimTokens,
+		meaningfulTokens:   meaningful,
+		strongSignals:      strong,
+		shortEvidence:      len(evidenceTokens) <= 3 || len(normalizedEvidence) < 24,
+	}
+}
+
+func (m evidenceMatcher) matches(source EvidenceSource) bool {
+	sourceNorm := normalizeEvidenceText(source.Content)
+	if sourceNorm == "" {
+		return false
+	}
+	if strings.Contains(sourceNorm, m.normalizedEvidence) {
+		if m.shortEvidence {
+			return m.hasStrongSignalIn(source.Content)
+		}
+		return true
+	}
+	if m.normalizedSnippetMatches(sourceNorm) {
+		return true
+	}
+	sourceTokens := tokenSet(source.Content)
+	if m.identifierAwareMatches(sourceTokens, source.Content) {
+		return true
+	}
+	return m.tokenOverlapMatches(sourceTokens)
+}
+
+func (m evidenceMatcher) normalizedSnippetMatches(sourceNorm string) bool {
+	if m.normalizedEvidence == "" || m.shortEvidence && !m.hasStrongSignalIn(sourceNorm) {
+		return false
+	}
+	parts := splitNormalizedSnippet(m.normalizedEvidence)
+	for _, part := range parts {
+		if len(part) >= 12 && strings.Contains(sourceNorm, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m evidenceMatcher) identifierAwareMatches(sourceTokens map[string]struct{}, sourceContent string) bool {
+	strongMatches := 0
+	for signal := range m.strongSignals {
+		if _, ok := sourceTokens[signal]; ok {
+			strongMatches++
+		}
+	}
+	if m.shortEvidence {
+		return strongMatches > 0
+	}
+	if strongMatches >= 2 {
+		return true
+	}
+	if strongMatches == 1 && m.tokenOverlapRatio(sourceTokens, m.meaningfulTokens) >= 0.50 {
+		return true
+	}
+	return m.hasCodePhraseIn(sourceContent)
+}
+
+func (m evidenceMatcher) tokenOverlapMatches(sourceTokens map[string]struct{}) bool {
+	if m.shortEvidence {
+		return false
+	}
+	return m.tokenOverlapRatio(sourceTokens, m.meaningfulTokens) >= 0.68 && overlapCount(sourceTokens, m.strongSignals) > 0
+}
+
+func (m evidenceMatcher) tokenOverlapRatio(sourceTokens map[string]struct{}, needles map[string]struct{}) float64 {
+	if len(needles) == 0 {
+		return 0
+	}
+	return float64(overlapCount(sourceTokens, needles)) / float64(len(needles))
+}
+
+func (m evidenceMatcher) hasStrongSignalIn(content string) bool {
+	sourceTokens := tokenSet(content)
+	if overlapCount(sourceTokens, m.strongSignals) > 0 {
+		return true
+	}
+	return m.hasCodePhraseIn(content)
+}
+
+func (m evidenceMatcher) hasCodePhraseIn(content string) bool {
+	contentNorm := normalizeEvidenceText(content)
+	for _, phrase := range codePhrases(m.finding.Evidence) {
+		if strings.Contains(contentNorm, normalizeEvidenceText(phrase)) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceCompatible(finding Finding, filePath string, source EvidenceSource) bool {
+	claim := normalizeEvidenceText(strings.Join([]string{
+		finding.Category,
+		finding.Title,
+		finding.Evidence,
+		finding.FailureScenario,
+		finding.Suggestion,
+		filePath,
+	}, " "))
+	switch source.Type {
+	case EvidenceSourcePatch, EvidenceSourceFullFile, EvidenceSourceStaticCheck:
+		return true
+	case EvidenceSourceRelatedTest:
+		return isTestPath(filePath) || strings.Contains(claim, "test") || strings.Contains(claim, "coverage")
+	case EvidenceSourceRepoDocs:
+		return isDocsOrConfigPath(filePath) || isDocsOrConfigFinding(claim)
+	case EvidenceSourceOmitted:
+		return isLimitationFinding(finding)
+	default:
+		return false
+	}
 }
 
 func normalizeEvidenceText(text string) string {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
 	return strings.Join(fields, " ")
+}
+
+func splitNormalizedSnippet(text string) []string {
+	var parts []string
+	for _, sep := range []string{" before ", " after ", " because ", " when ", " while ", " and ", " only "} {
+		if strings.Contains(text, sep) {
+			for _, part := range strings.Split(text, sep) {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					parts = append(parts, part)
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, text)
+	}
+	return parts
+}
+
+func tokenSet(text string) map[string]struct{} {
+	tokens := map[string]struct{}{}
+	var b strings.Builder
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		token := strings.ToLower(b.String())
+		tokens[token] = struct{}{}
+		b.Reset()
+	}
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
+			b.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	for _, token := range splitIdentifiers(tokens) {
+		tokens[token] = struct{}{}
+	}
+	return tokens
+}
+
+func splitIdentifiers(tokens map[string]struct{}) []string {
+	var out []string
+	for token := range tokens {
+		for _, part := range strings.FieldsFunc(token, func(r rune) bool {
+			return r == '_' || r == '-' || r == '.'
+		}) {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part != "" && part != token {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
+}
+
+func meaningfulTokenSet(tokens map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	for token := range tokens {
+		if isMeaningfulToken(token) {
+			out[token] = struct{}{}
+		}
+	}
+	return out
+}
+
+func strongSignalSet(text, filePath string) map[string]struct{} {
+	signals := map[string]struct{}{}
+	for token := range tokenSet(text) {
+		if isStrongSignalToken(token) {
+			signals[token] = struct{}{}
+		}
+	}
+	for token := range tokenSet(path.Base(filePath)) {
+		if isStrongSignalToken(token) {
+			signals[token] = struct{}{}
+		}
+	}
+	for _, literal := range literalsIn(text) {
+		signals[literal] = struct{}{}
+	}
+	for _, key := range configKeysIn(text) {
+		signals[key] = struct{}{}
+	}
+	return signals
+}
+
+func isMeaningfulToken(token string) bool {
+	if token == "" || genericEvidenceTokens[token] {
+		return false
+	}
+	if len(token) < 3 && !hasDigit(token) {
+		return false
+	}
+	return true
+}
+
+func isStrongSignalToken(token string) bool {
+	if !isMeaningfulToken(token) {
+		return false
+	}
+	return hasDigit(token) ||
+		strings.ContainsAny(token, "._-") ||
+		strings.HasSuffix(token, "()") ||
+		len(token) >= 4
+}
+
+func hasDigit(token string) bool {
+	for _, r := range token {
+		if unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func overlapCount(sourceTokens, needles map[string]struct{}) int {
+	count := 0
+	for token := range needles {
+		if _, ok := sourceTokens[token]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func literalsIn(text string) []string {
+	var out []string
+	for token := range tokenSet(text) {
+		if hasDigit(token) || strings.EqualFold(token, "true") || strings.EqualFold(token, "false") {
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
+func configKeysIn(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if idx := strings.Index(line, ":"); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			if key != "" {
+				for token := range tokenSet(key) {
+					if isMeaningfulToken(token) {
+						out = append(out, token)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func codePhrases(text string) []string {
+	var phrases []string
+	if strings.ContainsAny(text, "=!<>:&|+-*/{}()[]") {
+		phrases = append(phrases, text)
+	}
+	return phrases
+}
+
+func isTestPath(filePath string) bool {
+	lower := strings.ToLower(filePath)
+	return strings.Contains(lower, "_test.") || strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/")
+}
+
+func isDocsOrConfigPath(filePath string) bool {
+	lower := strings.ToLower(filePath)
+	base := path.Base(lower)
+	return strings.HasSuffix(lower, ".md") ||
+		strings.HasSuffix(lower, ".yml") ||
+		strings.HasSuffix(lower, ".yaml") ||
+		strings.HasSuffix(lower, ".json") ||
+		strings.HasSuffix(lower, ".toml") ||
+		strings.HasSuffix(lower, ".ini") ||
+		strings.HasPrefix(lower, ".github/") ||
+		base == "dockerfile"
+}
+
+func isDocsOrConfigFinding(text string) bool {
+	for _, token := range []string{"doc", "docs", "documentation", "readme", "workflow", "configuration", "config", "setting", "settings", "advisory"} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+var genericEvidenceTokens = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true, "be": true, "before": true, "by": true,
+	"can": true, "code": true, "config": true, "could": true, "do": true, "does": true, "error": true,
+	"file": true, "for": true, "from": true, "handler": true, "if": true, "in": true, "is": true, "it": true,
+	"may": true, "nil": true, "not": true, "of": true, "on": true, "only": true, "or": true, "request": true,
+	"response": true, "return": true, "set": true, "test": true, "that": true, "the": true, "this": true,
+	"timeout": true, "to": true, "value": true, "when": true, "with": true,
 }
 
 func hasOmittedDependency(finding Finding, normalizedFile string, index EvidenceIndex) bool {
@@ -367,4 +733,23 @@ func (s VerificationStats) SortedReasons() []VerificationReason {
 	}
 	sort.Slice(reasons, func(i, j int) bool { return reasons[i] < reasons[j] })
 	return reasons
+}
+
+func (s VerificationStats) String() string {
+	reasonParts := make([]string, 0, len(s.Reasons))
+	for _, reason := range s.SortedReasons() {
+		reasonParts = append(reasonParts, string(reason)+"="+strconv.Itoa(s.Reasons[reason]))
+	}
+	return fmt.Sprintf(
+		"total=%d kept=%d downgraded=%d dropped=%d no_findings=%d kept_rate=%.4f downgraded_rate=%.4f dropped_rate=%.4f reasons=%s",
+		s.TotalFindings,
+		s.Kept,
+		s.Downgraded,
+		s.Dropped,
+		s.NoFindingCount,
+		s.KeptRate,
+		s.DowngradedRate,
+		s.DroppedRate,
+		strings.Join(reasonParts, ","),
+	)
 }
