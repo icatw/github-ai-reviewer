@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strconv"
+	"strings"
 )
 
 type Job struct {
@@ -69,6 +71,8 @@ func (s *Service) Process(ctx context.Context, job Job) error {
 		}
 		return err
 	}
+	result, stats := VerifyReviewResult(result, repoContext)
+	s.logVerificationStats(job, stats)
 	if !result.HasUsefulContent() {
 		s.logf("review job suppressed empty result delivery=%s repo=%s/%s pull=%d", job.DeliveryID, job.Owner, job.Repo, job.PullNumber)
 		if err := s.reportOutputSuppressed(ctx, job, result); err != nil {
@@ -122,6 +126,14 @@ func (s *Service) reportJobFailed(ctx context.Context, job Job, failure Failure)
 
 func (s *Service) logReporterError(event string, job Job, err error) {
 	s.logf("review reporter failed event=%s delivery=%s repo=%s/%s pull=%d error=%v", event, job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)
+}
+
+func (s *Service) logVerificationStats(job Job, stats VerificationStats) {
+	reasonParts := make([]string, 0, len(stats.Reasons))
+	for _, reason := range stats.SortedReasons() {
+		reasonParts = append(reasonParts, string(reason)+"="+strconv.Itoa(stats.Reasons[reason]))
+	}
+	s.logf("finding verification completed delivery=%s repo=%s/%s pull=%d total=%d kept=%d downgraded=%d dropped=%d reasons=%s", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, stats.TotalFindings, stats.Kept, stats.Downgraded, stats.Dropped, strings.Join(reasonParts, ","))
 }
 
 func reviewErrorCategory(err error) string {

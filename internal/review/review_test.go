@@ -72,6 +72,93 @@ func TestServiceLogsSafeContextSummary(t *testing.T) {
 	}
 }
 
+func TestServiceReportsVerifiedResultInsteadOfRawLLMResult(t *testing.T) {
+	line := 2
+	gh := &fakeGitHub{
+		files: []FileChange{{
+			Filename: "main.go",
+			Status:   "modified",
+			Patch:    "@@ -1,3 +1,3 @@\n package main\n func Name(user *User) string {\n+\treturn user.Name\n }\n",
+		}},
+		contents: map[string]string{
+			"main.go": "package main\nfunc Name(user *User) string {\n\treturn user.Name\n}\n",
+		},
+	}
+	llm := &fakeLLM{result: ReviewResult{
+		Summary: "Found issues.",
+		Findings: []Finding{
+			findingFixture("warning", "main.go", &line, "return user.Name"),
+			findingFixture("warning", "other.go", nil, "password is logged"),
+		},
+	}}
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if reporter.completed != 1 || reporter.suppressed != 0 {
+		t.Fatalf("reporter = %+v", reporter)
+	}
+	if len(reporter.result.Findings) != 1 {
+		t.Fatalf("reported findings = %+v, want one verified finding", reporter.result.Findings)
+	}
+	if reporter.result.Findings[0].File != "main.go" || reporter.result.Findings[0].Evidence != "return user.Name" {
+		t.Fatalf("reported result = %+v", reporter.result)
+	}
+}
+
+func TestServiceLogsSafeVerificationStats(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	gh := &fakeGitHub{
+		files: []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+const secret = \"do-not-log\"\n"}},
+		contents: map[string]string{
+			"main.go": "package main\nconst secret = \"do-not-log\"\n",
+		},
+	}
+	llm := &fakeLLM{result: ReviewResult{
+		Summary:  "Found issues.",
+		Findings: []Finding{findingFixture("warning", "other.go", nil, "secret")},
+	}}
+	svc := NewService(gh, llm, &fakeReporter{}, logger)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc", DeliveryID: "d1"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	logLine := buf.String()
+	for _, want := range []string{"finding verification completed", "total=1", "kept=0", "downgraded=0", "dropped=1", "unavailable_file=1"} {
+		if !strings.Contains(logLine, want) {
+			t.Fatalf("log line %q missing %q", logLine, want)
+		}
+	}
+	if strings.Contains(logLine, "do-not-log") || strings.Contains(logLine, "const secret") {
+		t.Fatalf("log line leaked private content: %q", logLine)
+	}
+}
+
+func TestServiceSuppressesWhenVerifiedResultHasNoUsefulContent(t *testing.T) {
+	gh := &fakeGitHub{
+		files:    []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+return nil\n"}},
+		contents: map[string]string{"main.go": "package main\nfunc Run() error { return nil }\n"},
+	}
+	llm := &fakeLLM{result: ReviewResult{
+		Findings: []Finding{findingFixture("warning", "other.go", nil, "password is logged")},
+	}}
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if reporter.suppressed != 1 || reporter.completed != 0 {
+		t.Fatalf("reporter = %+v", reporter)
+	}
+	if len(reporter.result.Findings) != 0 {
+		t.Fatalf("suppressed result = %+v", reporter.result)
+	}
+}
+
 func TestServiceReportsInfrastructureFailure(t *testing.T) {
 	gh := &fakeGitHub{err: errors.New("github failed")}
 	llm := &fakeLLM{}
