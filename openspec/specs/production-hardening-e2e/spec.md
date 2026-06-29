@@ -147,3 +147,11 @@ The project SHALL constrain fixes found during real deployment E2E to the minimu
 - **THEN** deterministic tests are added or updated where practical
 - **AND** local verification and the affected real E2E step are rerun before marking the task complete
 
+### Requirement: Durable service manager for verified deployment
+Verified deployments SHALL be managed by a durable host service manager rather than an interactive shell process.
+
+#### Scenario: E2E-verified service survives session exit
+- **WHEN** a deployment has passed real GitHub App E2E verification
+- **THEN** the service is configured to run under systemd or an equivalent durable service manager
+- **AND** the health endpoint remains available after the initiating shell or agent session ends
+
