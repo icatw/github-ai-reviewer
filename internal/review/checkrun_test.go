@@ -74,6 +74,32 @@ func TestCheckRunReporterCreatesCompletedCheckWithConclusionWhenNoMatchExists(t 
 	}
 }
 
+func TestCheckRunReporterKeepsHighSeverityFindingsAdvisory(t *testing.T) {
+	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc"}}}
+	reporter := NewCheckRunReporter(client)
+
+	err := reporter.ReviewCompleted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}, ReviewResult{
+		Summary: "Done",
+		Findings: []Finding{{
+			Severity:        "blocker",
+			Title:           "High severity stays advisory",
+			Evidence:        "evidence",
+			FailureScenario: "scenario",
+			Suggestion:      "suggestion",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ReviewCompleted() error = %v", err)
+	}
+	if len(client.updated) != 1 {
+		t.Fatalf("updated = %+v", client.updated)
+	}
+	req := client.updated[0].Request
+	if req.Status != CheckRunStatusCompleted || req.Conclusion != CheckRunConclusionNeutral {
+		t.Fatalf("update request = %+v", req)
+	}
+}
+
 func TestCheckRunReporterKeepsDowngradedFindingsAdvisory(t *testing.T) {
 	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc"}}}
 	reporter := NewCheckRunReporter(client)

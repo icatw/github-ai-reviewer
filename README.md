@@ -116,15 +116,25 @@ cp .env.example .env
 
 ```text
 GITHUB_APP_ID                 GitHub App ID
-GITHUB_APP_PRIVATE_KEY_PATH   GitHub App private key 文件路径
+GITHUB_APP_PRIVATE_KEY_PATH   GitHub App private key 文件路径，生产环境优先使用挂载 secret 文件
 GITHUB_WEBHOOK_SECRET         GitHub Webhook Secret
 LLM_BASE_URL                  OpenAI-compatible API 地址
 LLM_API_KEY                   模型 API Key
 LLM_MODEL                     模型名称
+GO_WORKSPACE_PROVIDER_ENABLED 本地 workspace checkout 开关，默认 false
+GO_WORKSPACE_ROOT             显式启用 checkout 时使用的绝对 workspace 根目录
 DATABASE_PATH                 SQLite 数据库路径
 ```
 
-M3 Check Run 状态上报还要求 GitHub App 增加 `Checks: Read and write` 权限；PR conversation summary comment 仍然需要 `Issues: Read and write` 权限。
+M3 Check Run 状态上报还要求 GitHub App 增加 `Checks: Read and write` 权限；PR conversation summary comment 仍然需要 `Issues: Read and write` 权限。Check Run 结论保持 advisory/non-blocking，AI finding 本身不会让检查失败。
+
+生产部署、安全配置和真实 E2E 验证步骤见 [docs/production.md](docs/production.md)。本地部署 smoke test 可以先运行：
+
+```bash
+scripts/smoke_local.sh
+```
+
+该脚本只构建服务、使用 dummy 非生产配置启动服务并检查 `/healthz`，不会调用 GitHub API、LLM、仓库 checkout、PR 评论或 Check Run。
 
 ## 开发目标
 

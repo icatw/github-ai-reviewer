@@ -157,10 +157,14 @@ type fakeIssueCommenter struct {
 	createdBody string
 	updatedID   int64
 	updatedBody string
+	listErr     error
 }
 
 func (f *fakeIssueCommenter) ListIssueComments(ctx context.Context, installationID int64, owner, repo string, number int) ([]IssueComment, error) {
 	f.listed = true
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.comments, nil
 }
 
