@@ -312,12 +312,13 @@ func TestVerifierEvalFixtures(t *testing.T) {
 			name: "static check evidence supports matching finding",
 			context: RepoContext{
 				StaticChecks: []StaticCheckEvidence{{
-					SourceType:   EvidenceSourceStaticCheck,
-					Tool:         "go vet",
-					ExitCategory: GoAnalyzerExitFailure,
-					Path:         "internal/app.go",
-					Line:         &line2,
-					Message:      "fmt.Println call has possible formatting directive %s",
+					SourceType:         EvidenceSourceStaticCheck,
+					Tool:               "go vet",
+					ExitCategory:       GoAnalyzerExitFailure,
+					Path:               "internal/app.go",
+					Line:               &line2,
+					Message:            "fmt.Println call has possible formatting directive %s",
+					WorkspaceValidated: true,
 				}},
 			},
 			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{{
@@ -342,18 +343,18 @@ func TestVerifierEvalFixtures(t *testing.T) {
 			},
 		},
 		{
-			name: "unrelated static check evidence cannot support finding",
+			name: "unvalidated static check evidence cannot support finding",
 			context: RepoContext{
 				StaticChecks: []StaticCheckEvidence{{
 					SourceType:   EvidenceSourceStaticCheck,
 					Tool:         "go test",
 					ExitCategory: GoAnalyzerExitFailure,
-					Path:         "internal/other.go",
-					Message:      "undefined: otherSymbol",
+					Path:         "internal/app.go",
+					Message:      "undefined: missingThing",
 				}},
 			},
 			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{
-				findingFixture("warning", "internal/app.go", nil, "undefined: otherSymbol"),
+				findingFixture("warning", "internal/app.go", nil, "undefined: missingThing"),
 			}},
 			wantStats: VerificationStats{
 				TotalFindings:            1,
@@ -365,14 +366,38 @@ func TestVerifierEvalFixtures(t *testing.T) {
 			},
 		},
 		{
-			name: "generic static check overlap is insufficient",
+			name: "provider limitation category is aggregate only",
 			context: RepoContext{
 				StaticChecks: []StaticCheckEvidence{{
 					SourceType:   EvidenceSourceStaticCheck,
-					Tool:         "go test",
-					ExitCategory: GoAnalyzerExitFailure,
-					Path:         "internal/app.go",
-					Message:      "test failed with error",
+					Tool:         "go analyzer",
+					ExitCategory: GoAnalyzerHeadMismatch,
+					Message:      "Go analyzer skipped: workspace provider recorded head_mismatch.",
+					Limitations:  []string{"Go analyzer skipped: workspace provider recorded head_mismatch."},
+				}},
+			},
+			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{
+				findingFixture("warning", "internal/app.go", nil, "head mismatch"),
+			}},
+			wantStats: VerificationStats{
+				TotalFindings:            1,
+				Dropped:                  1,
+				DroppedRate:              1,
+				StaticCheckEvidenceCount: 1,
+				StaticCheckSkipped:       map[GoAnalyzerExitCategory]int{GoAnalyzerHeadMismatch: 1},
+				Reasons:                  map[VerificationReason]int{VerificationReasonUnavailableFile: 1},
+			},
+		},
+		{
+			name: "generic static check overlap is insufficient",
+			context: RepoContext{
+				StaticChecks: []StaticCheckEvidence{{
+					SourceType:         EvidenceSourceStaticCheck,
+					Tool:               "go test",
+					ExitCategory:       GoAnalyzerExitFailure,
+					Path:               "internal/app.go",
+					Message:            "test failed with error",
+					WorkspaceValidated: true,
 				}},
 			},
 			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{

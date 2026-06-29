@@ -21,6 +21,28 @@ func TestLoadFromEnvSucceeds(t *testing.T) {
 	if cfg.HTTPAddr != ":9090" || cfg.GitHub.AppID != 123 || cfg.LLM.Model != "review-model" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
+	if cfg.GoWorkspace.Enabled {
+		t.Fatalf("GoWorkspace.Enabled = true, want default disabled")
+	}
+}
+
+func TestLoadFromEnvEnablesGoWorkspaceOnlyWhenExplicit(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
+	t.Setenv("GITHUB_APP_ID", "123")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "key")
+	t.Setenv("LLM_BASE_URL", "https://llm.example/v1")
+	t.Setenv("LLM_API_KEY", "api-key")
+	t.Setenv("LLM_MODEL", "review-model")
+	t.Setenv("GO_WORKSPACE_PROVIDER_ENABLED", "true")
+	t.Setenv("GO_WORKSPACE_ROOT", "/tmp/github-ai-reviewer-workspaces")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.GoWorkspace.Enabled || cfg.GoWorkspace.Root != "/tmp/github-ai-reviewer-workspaces" {
+		t.Fatalf("GoWorkspace = %+v, want explicit enabled root", cfg.GoWorkspace)
+	}
 }
 
 func TestLoadFromEnvReportsMissingRequiredConfig(t *testing.T) {

@@ -152,7 +152,7 @@ func BuildEvidenceIndex(ctx RepoContext) EvidenceIndex {
 		})
 	}
 	for _, item := range ctx.StaticChecks {
-		if item.Path == "" || item.Message == "" {
+		if item.Path == "" || item.Message == "" || !item.WorkspaceValidated {
 			continue
 		}
 		index.addSource(EvidenceSource{

@@ -9,9 +9,10 @@ import (
 )
 
 type Config struct {
-	HTTPAddr string
-	GitHub   GitHubConfig
-	LLM      LLMConfig
+	HTTPAddr    string
+	GitHub      GitHubConfig
+	LLM         LLMConfig
+	GoWorkspace GoWorkspaceConfig
 }
 
 type GitHubConfig struct {
@@ -27,6 +28,11 @@ type LLMConfig struct {
 	Model   string
 }
 
+type GoWorkspaceConfig struct {
+	Enabled bool
+	Root    string
+}
+
 func LoadFromEnv() (Config, error) {
 	cfg := Config{
 		HTTPAddr: envOrDefault("HTTP_ADDR", ":8088"),
@@ -39,6 +45,10 @@ func LoadFromEnv() (Config, error) {
 			BaseURL: os.Getenv("LLM_BASE_URL"),
 			APIKey:  os.Getenv("LLM_API_KEY"),
 			Model:   os.Getenv("LLM_MODEL"),
+		},
+		GoWorkspace: GoWorkspaceConfig{
+			Enabled: parseBoolEnv("GO_WORKSPACE_PROVIDER_ENABLED"),
+			Root:    os.Getenv("GO_WORKSPACE_ROOT"),
 		},
 	}
 	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {
@@ -93,4 +103,9 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseBoolEnv(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }

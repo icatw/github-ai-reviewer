@@ -37,7 +37,7 @@ func TestPlanGoAnalyzerCommandsUsesOnlyFixedArgvUnderSafeWorkspace(t *testing.T)
 	if err := os.Mkdir(moduleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plans, err := PlanGoAnalyzerCommands(SafeGoWorkspace{Root: root, WorkDir: moduleDir, HeadSHA: "abc"}, "abc")
+	plans, err := PlanGoAnalyzerCommands(SafeGoWorkspace{Root: root, WorkDir: moduleDir, HeadSHA: "abc", WorkspaceValidated: true}, "abc")
 	if err != nil {
 		t.Fatalf("PlanGoAnalyzerCommands() error = %v", err)
 	}
@@ -81,17 +81,62 @@ func TestGoAnalyzerSkipsNonGoAndUnsafeWorkspace(t *testing.T) {
 	}
 
 	goProject := analyzer.Analyze(context.Background(), Job{HeadSHA: "abc"}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
-	if goProject.Stats.ExitCategories[GoAnalyzerExitSkipped] != 1 || len(goProject.Evidence) != 1 {
+	if goProject.Stats.ExitCategories[GoAnalyzerProviderDisabled] != 1 || len(goProject.Evidence) != 1 {
 		t.Fatalf("unsafe workspace result = %+v", goProject)
 	}
-	if !strings.Contains(strings.Join(goProject.Limitations, " "), "safe workspace unavailable") {
+	if !strings.Contains(strings.Join(goProject.Limitations, " "), "provider disabled") {
 		t.Fatalf("unsafe workspace limitations = %#v", goProject.Limitations)
+	}
+}
+
+func TestGoAnalyzerMapsProviderFailuresToDeterministicCategories(t *testing.T) {
+	for _, category := range []GoAnalyzerExitCategory{
+		GoAnalyzerProviderUnavailable,
+		GoAnalyzerCheckoutFailed,
+		GoAnalyzerCheckoutTimeout,
+		GoAnalyzerHeadMismatch,
+		GoAnalyzerPathInvalid,
+		GoAnalyzerCredentialUnavailable,
+	} {
+		t.Run(string(category), func(t *testing.T) {
+			analyzer := NewGoAnalyzer(staticWorkspaceProvider{err: WorkspaceProviderError(category, "safe setup failed")}, nil, GoAnalyzerOptions{})
+
+			result := analyzer.Analyze(context.Background(), Job{HeadSHA: "abc"}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
+
+			if result.Stats.ExitCategories[category] != 1 {
+				t.Fatalf("exit categories = %#v, want %s", result.Stats.ExitCategories, category)
+			}
+			if len(result.Evidence) != 1 || result.Evidence[0].WorkspaceValidated {
+				t.Fatalf("provider limitation evidence = %+v, want aggregate-only unvalidated limitation", result.Evidence)
+			}
+		})
+	}
+}
+
+func TestGoAnalyzerCleansWorkspaceAndRecordsCleanupFailure(t *testing.T) {
+	root := t.TempDir()
+	cleanupErr := errors.New("cleanup failed")
+	provider := staticWorkspaceProvider{workspace: SafeGoWorkspace{
+		Root:    root,
+		WorkDir: root,
+		HeadSHA: "abc",
+		Cleanup: func(context.Context) error { return cleanupErr },
+	}}
+	analyzer := NewGoAnalyzer(provider, &recordingExecutor{}, GoAnalyzerOptions{Timeout: time.Second})
+
+	result := analyzer.Analyze(context.Background(), Job{HeadSHA: "abc"}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
+
+	if result.Stats.ExitCategories[GoAnalyzerWorkspaceReady] != 1 {
+		t.Fatalf("exit categories = %#v, want workspace ready", result.Stats.ExitCategories)
+	}
+	if result.Stats.ExitCategories[GoAnalyzerCleanupFailed] != 1 {
+		t.Fatalf("exit categories = %#v, want cleanup failed", result.Stats.ExitCategories)
 	}
 }
 
 func TestGoAnalyzerExecutionCategoriesOutputLimitAndSecretFreeEnvironment(t *testing.T) {
 	root := t.TempDir()
-	provider := staticWorkspaceProvider{workspace: SafeGoWorkspace{Root: root, WorkDir: root, HeadSHA: "abc"}}
+	provider := staticWorkspaceProvider{workspace: SafeGoWorkspace{Root: root, WorkDir: root, HeadSHA: "abc", WorkspaceValidated: true}}
 	executor := &recordingExecutor{results: []GoCommandExecution{
 		{ExitCode: 0, Stdout: "ok"},
 		{ExitCode: 1, Stderr: strings.Repeat("x", 40) + "\nmain.go:12:6: undefined: missingSecret\n"},
@@ -120,6 +165,43 @@ func TestGoAnalyzerExecutionCategoriesOutputLimitAndSecretFreeEnvironment(t *tes
 	}
 }
 
+func TestGoAnalyzerEvidenceRequiresValidatedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	provider := staticWorkspaceProvider{workspace: SafeGoWorkspace{Root: root, WorkDir: root, HeadSHA: "abc", WorkspaceValidated: true}}
+	executor := &recordingExecutor{results: []GoCommandExecution{
+		{ExitCode: 1, Stderr: "main.go:12:6: undefined: missingThing\n"},
+		{ExitCode: 0},
+	}}
+	analyzer := NewGoAnalyzer(provider, executor, GoAnalyzerOptions{Timeout: time.Second})
+
+	result := analyzer.Analyze(context.Background(), Job{HeadSHA: "abc"}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
+
+	found := false
+	for _, item := range result.Evidence {
+		if item.Path == "main.go" {
+			found = true
+			if !item.WorkspaceValidated {
+				t.Fatalf("static evidence = %+v, want workspace validated", item)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("evidence = %+v, want parsed static check item", result.Evidence)
+	}
+}
+
+func TestMinimalGoAnalyzerEnvExcludesServiceAndCheckoutSecrets(t *testing.T) {
+	env := strings.Join(MinimalGoAnalyzerEnv(), "\n")
+	for _, disallowed := range []string{
+		"GITHUB_TOKEN", "GH_TOKEN", "GITHUB_APP_PRIVATE_KEY", "GITHUB_WEBHOOK_SECRET", "LLM_API_KEY", "OPENAI_API_KEY",
+		"CHECKOUT_TOKEN", "GIT_ASKPASS",
+	} {
+		if strings.Contains(env, disallowed) {
+			t.Fatalf("minimal analyzer env contains %s: %#v", disallowed, MinimalGoAnalyzerEnv())
+		}
+	}
+}
+
 func TestGoAnalyzerMapsTimeoutUnavailableAndInternalErrorsNonBlocking(t *testing.T) {
 	root := t.TempDir()
 	tests := []struct {
@@ -134,7 +216,7 @@ func TestGoAnalyzerMapsTimeoutUnavailableAndInternalErrorsNonBlocking(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			analyzer := NewGoAnalyzer(
-				staticWorkspaceProvider{workspace: SafeGoWorkspace{Root: root, WorkDir: root, HeadSHA: "abc"}},
+				staticWorkspaceProvider{workspace: SafeGoWorkspace{Root: root, WorkDir: root, HeadSHA: "abc", WorkspaceValidated: true}},
 				&recordingExecutor{err: tt.err},
 				GoAnalyzerOptions{Timeout: time.Second, OutputLimitBytes: 128},
 			)

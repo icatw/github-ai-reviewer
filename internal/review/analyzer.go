@@ -30,18 +30,29 @@ var (
 type GoAnalyzerExitCategory string
 
 const (
-	GoAnalyzerExitSkipped       GoAnalyzerExitCategory = "skipped"
-	GoAnalyzerExitUnavailable   GoAnalyzerExitCategory = "unavailable"
-	GoAnalyzerExitSuccess       GoAnalyzerExitCategory = "success"
-	GoAnalyzerExitFailure       GoAnalyzerExitCategory = "failure"
-	GoAnalyzerExitTimeout       GoAnalyzerExitCategory = "timeout"
-	GoAnalyzerExitInternalError GoAnalyzerExitCategory = "internal_error"
+	GoAnalyzerExitSkipped           GoAnalyzerExitCategory = "skipped"
+	GoAnalyzerExitUnavailable       GoAnalyzerExitCategory = "unavailable"
+	GoAnalyzerExitSuccess           GoAnalyzerExitCategory = "success"
+	GoAnalyzerExitFailure           GoAnalyzerExitCategory = "failure"
+	GoAnalyzerExitTimeout           GoAnalyzerExitCategory = "timeout"
+	GoAnalyzerExitInternalError     GoAnalyzerExitCategory = "internal_error"
+	GoAnalyzerProviderDisabled      GoAnalyzerExitCategory = "provider_disabled"
+	GoAnalyzerProviderUnavailable   GoAnalyzerExitCategory = "provider_unavailable"
+	GoAnalyzerCheckoutFailed        GoAnalyzerExitCategory = "checkout_failed"
+	GoAnalyzerCheckoutTimeout       GoAnalyzerExitCategory = "checkout_timeout"
+	GoAnalyzerHeadMismatch          GoAnalyzerExitCategory = "head_mismatch"
+	GoAnalyzerPathInvalid           GoAnalyzerExitCategory = "path_invalid"
+	GoAnalyzerCredentialUnavailable GoAnalyzerExitCategory = "credential_unavailable"
+	GoAnalyzerWorkspaceReady        GoAnalyzerExitCategory = "workspace_ready"
+	GoAnalyzerCleanupFailed         GoAnalyzerExitCategory = "cleanup_failed"
 )
 
 type SafeGoWorkspace struct {
-	Root    string
-	WorkDir string
-	HeadSHA string
+	Root               string
+	WorkDir            string
+	HeadSHA            string
+	WorkspaceValidated bool
+	Cleanup            func(context.Context) error
 }
 
 type GoAnalyzerCommandPlan struct {
@@ -61,14 +72,15 @@ type GoCommandExecution struct {
 }
 
 type StaticCheckEvidence struct {
-	SourceType   EvidenceSourceType
-	Tool         string
-	ExitCategory GoAnalyzerExitCategory
-	Package      string
-	Path         string
-	Line         *int
-	Message      string
-	Limitations  []string
+	SourceType         EvidenceSourceType
+	Tool               string
+	ExitCategory       GoAnalyzerExitCategory
+	Package            string
+	Path               string
+	Line               *int
+	Message            string
+	Limitations        []string
+	WorkspaceValidated bool
 }
 
 type GoAnalyzerResult struct {
@@ -119,17 +131,27 @@ func (a *GoAnalyzer) Analyze(ctx context.Context, job Job, repoContext RepoConte
 		return result
 	}
 	if a == nil || a.workspaceProvider == nil {
-		result.addLimitation(GoAnalyzerExitSkipped, "Go analyzer skipped: safe workspace unavailable for PR head.")
+		result.addLimitation(GoAnalyzerProviderDisabled, "Go analyzer skipped: safe workspace provider disabled.")
 		return result
 	}
 	workspace, err := a.workspaceProvider.WorkspaceForReview(ctx, job, repoContext)
 	if err != nil {
-		result.addLimitation(GoAnalyzerExitSkipped, "Go analyzer skipped: safe workspace unavailable for PR head.")
+		result.addProviderLimitation(providerFailureCategory(err), "Go analyzer skipped: workspace provider recorded "+string(providerFailureCategory(err))+".")
 		return result
+	}
+	result.Stats.ExitCategories[GoAnalyzerWorkspaceReady]++
+	cleanup := func() {
+		if workspace.Cleanup != nil {
+			if err := workspace.Cleanup(ctx); err != nil {
+				result.addProviderLimitation(GoAnalyzerCleanupFailed, "Go analyzer workspace cleanup recorded cleanup_failed.")
+			}
+		}
 	}
 	plans, err := PlanGoAnalyzerCommands(workspace, job.HeadSHA)
 	if err != nil {
-		result.addLimitation(GoAnalyzerExitSkipped, "Go analyzer skipped: unsafe workspace.")
+		result.addProviderLimitation(GoAnalyzerPathInvalid, "Go analyzer skipped: unsafe workspace.")
+		cleanup()
+		result.Stats.ParsedEvidence = len(result.Evidence)
 		return result
 	}
 	for i := range plans {
@@ -150,11 +172,15 @@ func (a *GoAnalyzer) Analyze(ctx context.Context, job Job, repoContext RepoConte
 		output, truncated := boundAnalyzerOutput(execution.Stdout+"\n"+execution.Stderr, a.options.OutputLimitBytes)
 		result.Stats.OutputTruncated = result.Stats.OutputTruncated || truncated
 		evidence, limitations := ParseGoAnalyzerOutput(plan, category, output, truncated)
+		for i := range evidence {
+			evidence[i].WorkspaceValidated = workspace.WorkspaceValidated
+		}
 		result.Evidence = append(result.Evidence, evidence...)
 		for _, limitation := range limitations {
 			result.addLimitationEvidence(plan.Tool, category, limitation)
 		}
 	}
+	cleanup()
 	result.Stats.ParsedEvidence = len(result.Evidence)
 	return result
 }
@@ -184,6 +210,10 @@ func (r *GoAnalyzerResult) addLimitationEvidence(tool string, category GoAnalyze
 		Message:      message,
 		Limitations:  []string{message},
 	})
+}
+
+func (r *GoAnalyzerResult) addProviderLimitation(category GoAnalyzerExitCategory, message string) {
+	r.addLimitation(category, message)
 }
 
 type GoCommandExecutorFunc func(ctx context.Context, plan GoAnalyzerCommandPlan) (GoCommandExecution, error)
@@ -234,7 +264,7 @@ func PlanGoAnalyzerCommands(workspace SafeGoWorkspace, expectedHeadSHA string) (
 }
 
 func validateSafeGoWorkspace(workspace SafeGoWorkspace, expectedHeadSHA string) (string, error) {
-	if strings.TrimSpace(workspace.Root) == "" || strings.TrimSpace(workspace.WorkDir) == "" || strings.TrimSpace(workspace.HeadSHA) == "" || workspace.HeadSHA != expectedHeadSHA {
+	if strings.TrimSpace(workspace.Root) == "" || strings.TrimSpace(workspace.WorkDir) == "" || strings.TrimSpace(workspace.HeadSHA) == "" || workspace.HeadSHA != expectedHeadSHA || !workspace.WorkspaceValidated {
 		return "", ErrUnsafeAnalyzerWorkspace
 	}
 	root, err := filepath.Abs(workspace.Root)
@@ -250,6 +280,14 @@ func validateSafeGoWorkspace(workspace SafeGoWorkspace, expectedHeadSHA string) 
 		return "", ErrUnsafeAnalyzerWorkspace
 	}
 	return workDir, nil
+}
+
+func providerFailureCategory(err error) GoAnalyzerExitCategory {
+	var providerErr WorkspaceProviderFailure
+	if errors.As(err, &providerErr) && providerErr.Category != "" {
+		return providerErr.Category
+	}
+	return GoAnalyzerProviderUnavailable
 }
 
 func ExecuteGoAnalyzerCommand(ctx context.Context, plan GoAnalyzerCommandPlan) (GoCommandExecution, error) {

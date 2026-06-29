@@ -186,7 +186,7 @@ func TestServiceDefaultAnalyzerSkipsUnsafeWorkspaceWithoutBlocking(t *testing.T)
 	if reporter.completed != 1 || reporter.failed != 0 {
 		t.Fatalf("reporter = %+v", reporter)
 	}
-	if !strings.Contains(buf.String(), "go analyzer completed") || !strings.Contains(buf.String(), "skipped=1") {
+	if !strings.Contains(buf.String(), "go analyzer completed") || !strings.Contains(buf.String(), "provider_disabled=1") {
 		t.Fatalf("log line = %q", buf.String())
 	}
 }
