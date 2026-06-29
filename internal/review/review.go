@@ -48,6 +48,12 @@ func NewService(github GitHubClient, llm LLMClient, reporter Reporter, logger *l
 	return &Service{github: github, llm: llm, reporter: reporter, logger: logger, goAnalyzer: NewGoAnalyzer(nil, nil, GoAnalyzerOptions{})}
 }
 
+func NewServiceWithWorkspaceProvider(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger, provider GoWorkspaceProvider) *Service {
+	svc := NewService(github, llm, reporter, logger)
+	svc.SetGoAnalyzer(NewGoAnalyzer(provider, nil, GoAnalyzerOptions{}))
+	return svc
+}
+
 func (s *Service) SetGoAnalyzer(analyzer Analyzer) {
 	s.goAnalyzer = analyzer
 }

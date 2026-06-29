@@ -45,6 +45,95 @@ func TestLocalGoWorkspaceProviderCreatesContainedWorkspace(t *testing.T) {
 	assertNoSecretInGitCalls(t, executor.calls, "token-value")
 }
 
+func TestLocalGoWorkspaceProviderUsesCredentialOnlyForFetchWithoutLeakingToken(t *testing.T) {
+	root := t.TempDir()
+	headSHA := strings.Repeat("a", 40)
+	token := "sentinel-checkout-token-1234567890"
+	executor := &recordingGitExecutor{heads: []string{headSHA}}
+	provider := NewLocalGoWorkspaceProvider(LocalGoWorkspaceProviderOptions{
+		Enabled:            true,
+		Root:               root,
+		Executor:           executor,
+		CheckoutCredential: CheckoutCredential{InstallationID: 42, Owner: "octo", Repo: "repo", HeadSHA: headSHA, token: token},
+	})
+
+	_, err := provider.WorkspaceForReview(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 1, HeadSHA: headSHA}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
+	if err != nil {
+		t.Fatalf("WorkspaceForReview() error = %v", err)
+	}
+
+	fetchCredentialEnv := 0
+	for _, call := range executor.calls {
+		joinedArgv := strings.Join(call.Argv, " ")
+		if strings.Contains(joinedArgv, token) {
+			t.Fatalf("git argv leaked token: %+v", call)
+		}
+		if strings.Contains(joinedArgv, "@github.com") {
+			t.Fatalf("git argv used tokenized/userinfo remote: %+v", call)
+		}
+		hasCredential := strings.Contains(strings.Join(call.Env, "\n"), "GITHUB_AI_REVIEWER_CHECKOUT_CREDENTIAL_ID=")
+		isFetch := len(call.Argv) >= 4 && call.Argv[3] == "fetch"
+		if hasCredential && !isFetch {
+			t.Fatalf("credential env used outside fetch: %+v", call)
+		}
+		if hasCredential {
+			fetchCredentialEnv++
+		}
+	}
+	if fetchCredentialEnv != 1 {
+		t.Fatalf("credential-bearing fetch env count = %d, want 1", fetchCredentialEnv)
+	}
+}
+
+func TestLocalGoWorkspaceProviderRejectsCredentialScopeMismatchBeforeGit(t *testing.T) {
+	root := t.TempDir()
+	executor := &recordingGitExecutor{}
+	provider := NewLocalGoWorkspaceProvider(LocalGoWorkspaceProviderOptions{
+		Enabled:            true,
+		Root:               root,
+		Executor:           executor,
+		CheckoutCredential: CheckoutCredential{InstallationID: 43, Owner: "octo", Repo: "repo", HeadSHA: strings.Repeat("a", 40), token: "sentinel-checkout-token"},
+	})
+
+	_, err := provider.WorkspaceForReview(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 1, HeadSHA: strings.Repeat("a", 40)}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
+
+	var providerErr WorkspaceProviderFailure
+	if !errors.As(err, &providerErr) || providerErr.Category != GoAnalyzerCredentialScopeMismatch {
+		t.Fatalf("error = %v, want credential scope mismatch", err)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("git calls = %d, want no checkout with mismatched credential", len(executor.calls))
+	}
+}
+
+func TestLocalGoWorkspaceProviderCleansCredentialIDWhenCheckoutFailsBeforeFetch(t *testing.T) {
+	root := t.TempDir()
+	headSHA := strings.Repeat("a", 40)
+	executor := &recordingGitExecutor{err: ErrWorkspacePathInvalid}
+	provider := NewLocalGoWorkspaceProvider(LocalGoWorkspaceProviderOptions{
+		Enabled:            true,
+		Root:               root,
+		Executor:           executor,
+		CheckoutCredential: CheckoutCredential{InstallationID: 42, Owner: "octo", Repo: "repo", HeadSHA: headSHA, token: "sentinel-checkout-token"},
+	})
+
+	_, err := provider.WorkspaceForReview(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 1, HeadSHA: headSHA}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
+
+	var providerErr WorkspaceProviderFailure
+	if !errors.As(err, &providerErr) || providerErr.Category != GoAnalyzerPathInvalid {
+		t.Fatalf("error = %v, want path invalid", err)
+	}
+	for _, call := range executor.calls {
+		id := envValue(call.Env, "GITHUB_AI_REVIEWER_CHECKOUT_CREDENTIAL_ID")
+		if id == "" {
+			continue
+		}
+		if _, ok := checkoutCredentialTokens.Load(id); ok {
+			t.Fatalf("credential id %q was not cleaned up", id)
+		}
+	}
+}
+
 func TestLocalGoWorkspaceProviderRejectsUnsafePaths(t *testing.T) {
 	root := t.TempDir()
 	if _, err := ValidateContainedPath(root, filepath.Join(root, "repo")); err != nil {
@@ -97,6 +186,19 @@ func TestLocalGoWorkspaceProviderPlansFixedGitArgv(t *testing.T) {
 	}
 }
 
+func TestPlanGitCheckoutCommandsRejectsTokenizedRemote(t *testing.T) {
+	plans := PlanGitCheckoutCommands(GitCheckoutPlanInput{
+		RemoteURL: "https://x-access-token:sentinel-checkout-token@github.com/octo/repo.git",
+		HeadSHA:   strings.Repeat("a", 40),
+		WorkDir:   "/tmp/work/repo",
+	})
+	for _, plan := range plans {
+		if len(plan.Argv) >= 4 && plan.Argv[3] == "remote" && isFixedGitArgv(plan.Argv) {
+			t.Fatalf("tokenized git argv accepted: %+v", plan)
+		}
+	}
+}
+
 func TestLocalGoWorkspaceProviderMapsCheckoutFailures(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -117,6 +219,32 @@ func TestLocalGoWorkspaceProviderMapsCheckoutFailures(t *testing.T) {
 				Executor: &recordingGitExecutor{err: tt.err, heads: []string{tt.head}},
 			})
 			_, err := provider.WorkspaceForReview(context.Background(), Job{Owner: "octo", Repo: "repo", PullNumber: 1, HeadSHA: headSHA}, RepoContext{})
+			var providerErr WorkspaceProviderFailure
+			if !errors.As(err, &providerErr) || providerErr.Category != tt.want {
+				t.Fatalf("error = %v, want category %s", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLocalGoWorkspaceProviderMapsCredentialFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want GoAnalyzerExitCategory
+	}{
+		{name: "provider failure", err: WorkspaceProviderFailure{Category: GoAnalyzerCredentialUnavailable}, want: GoAnalyzerCredentialUnavailable},
+		{name: "plain failure", err: ErrCheckoutCredentialUnavailable, want: GoAnalyzerCredentialUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			provider := NewLocalGoWorkspaceProvider(LocalGoWorkspaceProviderOptions{
+				Enabled:            true,
+				Root:               root,
+				Executor:           &recordingGitExecutor{},
+				CredentialProvider: staticCheckoutCredentialProvider{err: tt.err},
+			})
+			_, err := provider.WorkspaceForReview(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 1, HeadSHA: strings.Repeat("a", 40)}, RepoContext{Patches: []PatchContext{{Path: "main.go"}}})
 			var providerErr WorkspaceProviderFailure
 			if !errors.As(err, &providerErr) || providerErr.Category != tt.want {
 				t.Fatalf("error = %v, want category %s", err, tt.want)
@@ -146,6 +274,15 @@ type recordingGitExecutor struct {
 	calls []GitCommandPlan
 	heads []string
 	err   error
+}
+
+type staticCheckoutCredentialProvider struct {
+	credential CheckoutCredential
+	err        error
+}
+
+func (p staticCheckoutCredentialProvider) CheckoutCredential(context.Context, CheckoutCredentialRequest) (CheckoutCredential, error) {
+	return p.credential, p.err
 }
 
 func (e *recordingGitExecutor) ExecuteGit(ctx context.Context, plan GitCommandPlan) (GitCommandResult, error) {

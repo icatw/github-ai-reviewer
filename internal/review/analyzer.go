@@ -30,21 +30,23 @@ var (
 type GoAnalyzerExitCategory string
 
 const (
-	GoAnalyzerExitSkipped           GoAnalyzerExitCategory = "skipped"
-	GoAnalyzerExitUnavailable       GoAnalyzerExitCategory = "unavailable"
-	GoAnalyzerExitSuccess           GoAnalyzerExitCategory = "success"
-	GoAnalyzerExitFailure           GoAnalyzerExitCategory = "failure"
-	GoAnalyzerExitTimeout           GoAnalyzerExitCategory = "timeout"
-	GoAnalyzerExitInternalError     GoAnalyzerExitCategory = "internal_error"
-	GoAnalyzerProviderDisabled      GoAnalyzerExitCategory = "provider_disabled"
-	GoAnalyzerProviderUnavailable   GoAnalyzerExitCategory = "provider_unavailable"
-	GoAnalyzerCheckoutFailed        GoAnalyzerExitCategory = "checkout_failed"
-	GoAnalyzerCheckoutTimeout       GoAnalyzerExitCategory = "checkout_timeout"
-	GoAnalyzerHeadMismatch          GoAnalyzerExitCategory = "head_mismatch"
-	GoAnalyzerPathInvalid           GoAnalyzerExitCategory = "path_invalid"
-	GoAnalyzerCredentialUnavailable GoAnalyzerExitCategory = "credential_unavailable"
-	GoAnalyzerWorkspaceReady        GoAnalyzerExitCategory = "workspace_ready"
-	GoAnalyzerCleanupFailed         GoAnalyzerExitCategory = "cleanup_failed"
+	GoAnalyzerExitSkipped               GoAnalyzerExitCategory = "skipped"
+	GoAnalyzerExitUnavailable           GoAnalyzerExitCategory = "unavailable"
+	GoAnalyzerExitSuccess               GoAnalyzerExitCategory = "success"
+	GoAnalyzerExitFailure               GoAnalyzerExitCategory = "failure"
+	GoAnalyzerExitTimeout               GoAnalyzerExitCategory = "timeout"
+	GoAnalyzerExitInternalError         GoAnalyzerExitCategory = "internal_error"
+	GoAnalyzerProviderDisabled          GoAnalyzerExitCategory = "provider_disabled"
+	GoAnalyzerProviderUnavailable       GoAnalyzerExitCategory = "provider_unavailable"
+	GoAnalyzerCheckoutFailed            GoAnalyzerExitCategory = "checkout_failed"
+	GoAnalyzerCheckoutTimeout           GoAnalyzerExitCategory = "checkout_timeout"
+	GoAnalyzerHeadMismatch              GoAnalyzerExitCategory = "head_mismatch"
+	GoAnalyzerPathInvalid               GoAnalyzerExitCategory = "path_invalid"
+	GoAnalyzerCredentialUnavailable     GoAnalyzerExitCategory = "credential_unavailable"
+	GoAnalyzerCredentialScopeMismatch   GoAnalyzerExitCategory = "credential_scope_mismatch"
+	GoAnalyzerCredentialInjectionFailed GoAnalyzerExitCategory = "credential_injection_failed"
+	GoAnalyzerWorkspaceReady            GoAnalyzerExitCategory = "workspace_ready"
+	GoAnalyzerCleanupFailed             GoAnalyzerExitCategory = "cleanup_failed"
 )
 
 type SafeGoWorkspace struct {

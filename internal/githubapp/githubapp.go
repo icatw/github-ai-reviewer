@@ -254,6 +254,10 @@ func (c *Client) installationToken(ctx context.Context, installationID int64) (s
 	return out.Token, nil
 }
 
+func (c *Client) InstallationToken(ctx context.Context, installationID int64) (string, error) {
+	return c.installationToken(ctx, installationID)
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path, bearer string, in any, out any, want ...int) error {
 	var body *bytes.Reader
 	if in == nil {

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -29,8 +31,10 @@ type LLMConfig struct {
 }
 
 type GoWorkspaceConfig struct {
-	Enabled bool
-	Root    string
+	Enabled          bool
+	Root             string
+	CheckoutTimeout  time.Duration
+	OutputLimitBytes int
 }
 
 func LoadFromEnv() (Config, error) {
@@ -47,8 +51,10 @@ func LoadFromEnv() (Config, error) {
 			Model:   os.Getenv("LLM_MODEL"),
 		},
 		GoWorkspace: GoWorkspaceConfig{
-			Enabled: parseBoolEnv("GO_WORKSPACE_PROVIDER_ENABLED"),
-			Root:    os.Getenv("GO_WORKSPACE_ROOT"),
+			Enabled:          parseBoolEnv("GO_WORKSPACE_PROVIDER_ENABLED"),
+			Root:             os.Getenv("GO_WORKSPACE_ROOT"),
+			CheckoutTimeout:  30 * time.Second,
+			OutputLimitBytes: 16 * 1024,
 		},
 	}
 	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {
@@ -57,6 +63,20 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("GITHUB_APP_ID must be an integer")
 		}
 		cfg.GitHub.AppID = id
+	}
+	if timeout := os.Getenv("GO_WORKSPACE_CHECKOUT_TIMEOUT"); timeout != "" {
+		d, err := time.ParseDuration(timeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("GO_WORKSPACE_CHECKOUT_TIMEOUT must be a duration")
+		}
+		cfg.GoWorkspace.CheckoutTimeout = d
+	}
+	if limit := os.Getenv("GO_WORKSPACE_OUTPUT_LIMIT_BYTES"); limit != "" {
+		v, err := strconv.Atoi(limit)
+		if err != nil {
+			return Config{}, fmt.Errorf("GO_WORKSPACE_OUTPUT_LIMIT_BYTES must be an integer")
+		}
+		cfg.GoWorkspace.OutputLimitBytes = v
 	}
 	return cfg, cfg.Validate()
 }
@@ -80,6 +100,19 @@ func (c Config) Validate() error {
 	}
 	if c.LLM.Model == "" {
 		missing = append(missing, "LLM_MODEL")
+	}
+	if c.GoWorkspace.Enabled {
+		if strings.TrimSpace(c.GoWorkspace.Root) == "" {
+			missing = append(missing, "GO_WORKSPACE_ROOT")
+		} else if !filepath.IsAbs(c.GoWorkspace.Root) {
+			return errors.New("invalid GO_WORKSPACE_ROOT: must be an absolute path")
+		}
+		if c.GoWorkspace.CheckoutTimeout <= 0 {
+			return errors.New("invalid GO_WORKSPACE_CHECKOUT_TIMEOUT: must be positive")
+		}
+		if c.GoWorkspace.OutputLimitBytes <= 0 {
+			return errors.New("invalid GO_WORKSPACE_OUTPUT_LIMIT_BYTES: must be positive")
+		}
 	}
 	if len(missing) > 0 {
 		return errors.New("missing required config: " + strings.Join(missing, ", "))

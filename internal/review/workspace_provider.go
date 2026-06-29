@@ -2,6 +2,8 @@ package review
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +25,8 @@ var (
 	ErrWorkspaceCheckoutTimeout      = errors.New("workspace checkout timeout")
 	ErrCheckoutCredentialUnavailable = errors.New("checkout credential unavailable")
 )
+
+var checkoutCredentialTokens sync.Map
 
 type WorkspaceProviderFailure struct {
 	Category GoAnalyzerExitCategory
@@ -39,11 +44,13 @@ func (e WorkspaceProviderFailure) Error() string {
 }
 
 type LocalGoWorkspaceProviderOptions struct {
-	Enabled          bool
-	Root             string
-	Timeout          time.Duration
-	OutputLimitBytes int
-	Executor         GitCommandExecutor
+	Enabled            bool
+	Root               string
+	Timeout            time.Duration
+	OutputLimitBytes   int
+	Executor           GitCommandExecutor
+	CredentialProvider CheckoutCredentialProvider
+	CheckoutCredential CheckoutCredential
 }
 
 type LocalGoWorkspaceProvider struct {
@@ -125,12 +132,24 @@ func (p *LocalGoWorkspaceProvider) WorkspaceForReview(ctx context.Context, job J
 		return SafeGoWorkspace{}, WorkspaceProviderFailure{Category: GoAnalyzerPathInvalid}
 	}
 
+	credential, err := p.checkoutCredential(ctx, job)
+	if err != nil {
+		return SafeGoWorkspace{}, WorkspaceProviderFailure{Category: checkoutCredentialFailureCategory(err)}
+	}
 	plans := PlanGitCheckoutCommands(GitCheckoutPlanInput{
 		RemoteURL: githubHTTPSRemote(job.Owner, job.Repo),
 		HeadSHA:   job.HeadSHA,
 		WorkDir:   workDir,
 		Timeout:   p.options.Timeout,
 	})
+	cleanupCredential := func() {}
+	if token, ok := credential.TokenForCheckout(job); ok {
+		plans, cleanupCredential, err = InjectCheckoutCredential(plans, token)
+		if err != nil {
+			return SafeGoWorkspace{}, WorkspaceProviderFailure{Category: GoAnalyzerCredentialInjectionFailed}
+		}
+	}
+	defer cleanupCredential()
 	var head string
 	for _, plan := range plans {
 		plan.OutputLimitBytes = p.options.OutputLimitBytes
@@ -156,6 +175,24 @@ func (p *LocalGoWorkspaceProvider) WorkspaceForReview(ctx context.Context, job J
 	}, nil
 }
 
+func (p *LocalGoWorkspaceProvider) checkoutCredential(ctx context.Context, job Job) (CheckoutCredential, error) {
+	if p.options.CredentialProvider != nil {
+		return p.options.CredentialProvider.CheckoutCredential(ctx, CheckoutCredentialRequest{
+			InstallationID: job.InstallationID,
+			Owner:          job.Owner,
+			Repo:           job.Repo,
+			HeadSHA:        job.HeadSHA,
+		})
+	}
+	if p.options.CheckoutCredential.token == "" {
+		return CheckoutCredential{}, nil
+	}
+	if _, ok := p.options.CheckoutCredential.TokenForCheckout(job); !ok {
+		return CheckoutCredential{}, WorkspaceProviderFailure{Category: GoAnalyzerCredentialScopeMismatch}
+	}
+	return p.options.CheckoutCredential, nil
+}
+
 func PlanGitCheckoutCommands(input GitCheckoutPlanInput) []GitCommandPlan {
 	timeout := input.Timeout
 	if timeout <= 0 {
@@ -171,6 +208,28 @@ func PlanGitCheckoutCommands(input GitCheckoutPlanInput) []GitCommandPlan {
 	}
 }
 
+func InjectCheckoutCredential(plans []GitCommandPlan, token string) ([]GitCommandPlan, func(), error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, func() {}, ErrCheckoutCredentialUnavailable
+	}
+	id, err := newCredentialID()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	checkoutCredentialTokens.Store(id, token)
+	cleanup := func() { checkoutCredentialTokens.Delete(id) }
+	out := make([]GitCommandPlan, len(plans))
+	for i, plan := range plans {
+		out[i] = plan
+		out[i].Argv = append([]string(nil), plan.Argv...)
+		out[i].Env = append([]string(nil), plan.Env...)
+		if len(plan.Argv) >= 4 && plan.Argv[3] == "fetch" {
+			out[i].Env = append(out[i].Env, "GITHUB_AI_REVIEWER_CHECKOUT_CREDENTIAL_ID="+id)
+		}
+	}
+	return out, cleanup, nil
+}
+
 func ExecuteGitCommand(ctx context.Context, plan GitCommandPlan) (GitCommandResult, error) {
 	if !isFixedGitArgv(plan.Argv) || plan.Shell {
 		return GitCommandResult{}, ErrWorkspacePathInvalid
@@ -182,13 +241,18 @@ func ExecuteGitCommand(ctx context.Context, plan GitCommandPlan) (GitCommandResu
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, plan.Argv[0], plan.Argv[1:]...)
-	cmd.Env = append([]string(nil), plan.Env...)
+	env, cleanup, err := materializeCheckoutCredentialEnv(plan.Env)
+	if err != nil {
+		return GitCommandResult{}, err
+	}
+	defer cleanup()
+	cmd.Env = env
 	var stdout, stderr limitedBuffer
 	stdout.limit = plan.OutputLimitBytes
 	stderr.limit = plan.OutputLimitBytes
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	result := GitCommandResult{Stdout: stdout.String(), Stderr: stderr.String()}
 	if runCtx.Err() == context.DeadlineExceeded {
 		return result, ErrWorkspaceCheckoutTimeout
@@ -197,6 +261,86 @@ func ExecuteGitCommand(ctx context.Context, plan GitCommandPlan) (GitCommandResu
 		return result, err
 	}
 	return result, nil
+}
+
+func newCredentialID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", ErrCheckoutCredentialUnavailable
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+func materializeCheckoutCredentialEnv(env []string) ([]string, func(), error) {
+	out := append([]string(nil), env...)
+	id := envValue(out, "GITHUB_AI_REVIEWER_CHECKOUT_CREDENTIAL_ID")
+	if id == "" {
+		return out, func() {}, nil
+	}
+	value, ok := checkoutCredentialTokens.LoadAndDelete(id)
+	if !ok {
+		return nil, func() {}, ErrCheckoutCredentialUnavailable
+	}
+	token, ok := value.(string)
+	if !ok || token == "" {
+		return nil, func() {}, ErrCheckoutCredentialUnavailable
+	}
+	path, cleanup, err := writeAskPassHelper(token)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	out = removeEnvKey(out, "GITHUB_AI_REVIEWER_CHECKOUT_CREDENTIAL_ID")
+	out = append(out, "GIT_ASKPASS="+path)
+	return out, cleanup, nil
+}
+
+func writeAskPassHelper(token string) (string, func(), error) {
+	file, err := os.CreateTemp("", "github-ai-reviewer-askpass-*")
+	if err != nil {
+		return "", func() {}, ErrCheckoutCredentialUnavailable
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	script := "#!/bin/sh\ncase \"$1\" in\n*Username*) printf '%s\\n' x-access-token ;;\n*) printf '%s\\n' " + shellSingleQuote(token) + " ;;\nesac\n"
+	if _, err := file.WriteString(script); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", func() {}, ErrCheckoutCredentialUnavailable
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", func() {}, ErrCheckoutCredentialUnavailable
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		cleanup()
+		return "", func() {}, ErrCheckoutCredentialUnavailable
+	}
+	return path, cleanup, nil
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
+func removeEnvKey(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0]
+	for _, item := range env {
+		if !strings.HasPrefix(item, prefix) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func ValidateContainedPath(root, candidate string) (string, error) {
@@ -240,6 +384,13 @@ func CleanupSafeWorkspace(ctx context.Context, root, target string) error {
 }
 
 func checkoutFailureCategory(err error) GoAnalyzerExitCategory {
+	var providerErr WorkspaceProviderFailure
+	if errors.As(err, &providerErr) && providerErr.Category != "" {
+		return providerErr.Category
+	}
+	if errors.Is(err, ErrCheckoutCredentialUnavailable) {
+		return GoAnalyzerCredentialUnavailable
+	}
 	if errors.Is(err, ErrWorkspaceCheckoutTimeout) {
 		return GoAnalyzerCheckoutTimeout
 	}

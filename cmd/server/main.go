@@ -35,7 +35,13 @@ func main() {
 		comment.NewReporter(publisher),
 		review.NewCheckRunReporter(gh),
 	}
-	reviewSvc := review.NewService(gh, llmClient, reporters, logger)
+	reviewSvc := buildReviewService(cfg, reviewServiceDeps{
+		github:             gh,
+		installationTokens: gh,
+		llm:                llmClient,
+		reporter:           reporters,
+		logger:             logger,
+	})
 	w := worker.New(reviewSvc, logger)
 	w.Start(context.Background())
 

@@ -17,6 +17,7 @@ const (
 	SectionFullFile    ContextSection = "full_file_context"
 	SectionRelatedTest ContextSection = "related_test_context"
 	SectionRepoDocs    ContextSection = "repo_docs_context"
+	SectionStaticCheck ContextSection = "static_check_context"
 	SectionOmitted     ContextSection = "omitted_context"
 
 	OmitDeleted         OmitReason = "deleted"
@@ -349,6 +350,7 @@ func RenderPrompt(job Job, ctx RepoContext) string {
 	renderFileSection(&b, SectionFullFile, ctx.FullFiles)
 	renderFileSection(&b, SectionRelatedTest, ctx.RelatedTests)
 	renderFileSection(&b, SectionRepoDocs, ctx.RepoDocs)
+	renderStaticCheckSection(&b, ctx.StaticChecks)
 	renderOmittedSection(&b, ctx.Omitted)
 	return b.String()
 }
@@ -385,6 +387,31 @@ func renderFileSection(b *strings.Builder, section ContextSection, files []FileC
 	}
 }
 
+func renderStaticCheckSection(b *strings.Builder, items []StaticCheckEvidence) {
+	b.WriteString("## static_check_context\n")
+	if len(items) == 0 {
+		b.WriteString("(none)\n\n")
+		return
+	}
+	for _, item := range items {
+		fmt.Fprintf(b, "- tool=%s category=%s", item.Tool, item.ExitCategory)
+		if item.Path != "" {
+			fmt.Fprintf(b, " path=%s", item.Path)
+		}
+		if item.Line != nil {
+			fmt.Fprintf(b, " line=%d", *item.Line)
+		}
+		if item.Message != "" {
+			fmt.Fprintf(b, " message=%s", sanitizeAnalyzerMessage(item.Message))
+		}
+		if len(item.Limitations) > 0 {
+			fmt.Fprintf(b, " limitations=%s", strings.Join(sanitizeStringList(item.Limitations), "; "))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+}
+
 func renderOmittedSection(b *strings.Builder, items []OmittedContext) {
 	b.WriteString("## omitted_context\n")
 	if len(items) == 0 {
@@ -397,6 +424,16 @@ func renderOmittedSection(b *strings.Builder, items []OmittedContext) {
 	for _, item := range items {
 		fmt.Fprintf(b, "- path=%s section=%s reason=%s\n", item.Path, item.Section, item.Reason)
 	}
+}
+
+func sanitizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if sanitized := sanitizeAnalyzerMessage(value); sanitized != "" {
+			out = append(out, sanitized)
+		}
+	}
+	return out
 }
 
 func hasPatchOmission(items []OmittedContext) bool {
