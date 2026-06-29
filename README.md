@@ -1,151 +1,186 @@
 # GitHub AI Reviewer
 
-GitHub AI Reviewer 是一个基于 GitHub App 的 AI 代码评审服务。项目目标是让用户把机器人安装到自己的 GitHub 仓库后，在 Pull Request 创建或更新时自动触发评审流程，系统读取 PR 变更、构建上下文、调用 OpenAI-compatible 模型，并把结构化评审结果回写到 PR 页面。
+GitHub AI Reviewer is a Go service for running an AI code review bot as a GitHub App. It receives pull request webhooks, verifies GitHub signatures, fetches changed files through installation authentication, asks an OpenAI-compatible model for structured review data, and publishes a conservative PR summary comment plus an advisory Check Run.
 
-这个项目不是一个简单的 `git diff + prompt` demo，而是一个面向真实研发流程的 GitHub 自动化服务。第一阶段先跑通 GitHub App 到 PR 评论的闭环，后续逐步增强 Check Run、Inline Review、准确性校验、仓库上下文检索和 AST 级代码理解能力。
+The project is intentionally built as a real service rather than a `git diff | prompt` demo. The current goal is a deployable GitHub App review loop with safe defaults, repeatable tests, and documented production operation.
 
-## 项目定位
+## Current Capabilities
 
-一句话定位：
+- GitHub App webhook endpoint for `pull_request` events.
+- `X-Hub-Signature-256` verification before payload parsing.
+- Supported PR actions: `opened`, `synchronize`, and `reopened`.
+- GitHub App JWT generation and installation token exchange.
+- Pull request changed-files and patch retrieval.
+- OpenAI-compatible LLM review request with bounded context.
+- Structured review result parsing and validation.
+- Stable PR summary comment upsert using a hidden marker.
+- Advisory `AI Review` Check Run reporting with non-blocking conclusions for AI findings.
+- Optional local Go workspace checkout provider, disabled by default.
+- Production deployment documentation, systemd service management, local smoke tests, and real E2E evidence guidance.
 
-```text
-一个可安装到 GitHub 仓库的仓库级 AI Code Review Agent。
-```
+## Non-Goals For The Current Version
 
-它要解决的问题：
+These are intentionally outside the current production-ready slice:
 
-- 普通 AI Review 只看 diff，上下文不足，容易误报或漏报。
-- 人工 Review 重复劳动多，比如格式、测试缺失、明显逻辑风险、潜在安全问题。
-- GitHub PR 流程里缺少一个能结合静态检查、项目上下文和 LLM 推理的自动评审层。
-- 只调用大模型不能形成工程闭环，需要真正接入 Webhook、GitHub App 权限、PR 评论和 CI 状态。
+- Dashboard, billing, tenant management, or hosted SaaS account flows.
+- Automatic code modification or merge blocking.
+- Inline review comments on exact diff lines.
+- Full repository indexing, vector search, AST call graphs, or long-term review memory.
+- Arbitrary CI command execution against private repositories.
+- Enabling real repository checkout without explicit operator configuration.
 
-## MVP 范围
-
-第一版只追求一个完整、可演示、可验证的闭环：
-
-```text
-GitHub PR 事件
-  -> GitHub App Webhook
-  -> 签名校验
-  -> Installation Token 鉴权
-  -> 获取 PR changed files / patch
-  -> 构建 Review Prompt
-  -> 调用 LLM
-  -> 回写 PR Comment
-```
-
-MVP 包含：
-
-- GitHub App Webhook 接口
-- `X-Hub-Signature-256` 签名校验
-- GitHub App JWT 生成
-- Installation Token 换取
-- Pull Request 变更文件获取
-- OpenAI-compatible LLM 调用
-- 结构化 Review Summary 生成
-- PR 普通评论回写
-- Docker 部署配置
-- 自动创建测试 PR 并验证评论回写
-
-MVP 暂不包含：
-
-- 复杂 Dashboard
-- 多租户计费系统
-- 自动修复代码
-- 全语言 AST 分析
-- 向量数据库
-- 全仓库智能体
-
-这些能力会在后续阶段逐步添加。
-
-## 后续增强范围
-
-MVP 跑通后，后续按优先级增加：
-
-- GitHub Check Run：在 PR Checks 区显示 AI Review 状态。
-- Inline Review Comment：在后续阶段对高置信度问题评论到具体代码行。
-- Finding Verifier：对 LLM 生成的问题做二次证据校验。
-- Severity Policy：按 blocker、warning、suggestion、question 分级。
-- 仓库配置文件：支持 `.github/ai-review.yml`。
-- 静态分析集成：接入 `go test`、`go vet`、`staticcheck`、`gosec`、`semgrep` 等。
-- Repo Context：读取完整变更文件、相关测试、README、docs、配置文件。
-- AST / Tree-sitter：构建符号索引、调用链和影响面分析。
-- Review 历史记录：保存任务状态、发现的问题、模型调用成本和失败日志。
-
-## 技术栈建议
-
-当前项目优先采用 Go 技术栈，便于体现后端工程能力和 GitHub App 服务端能力。
+## Architecture
 
 ```text
-语言：Go
-HTTP 服务：net/http 或 Gin
-GitHub SDK：google/go-github
-JWT：golang-jwt/jwt
-存储：SQLite，后续可升级 PostgreSQL
-队列：开发版内存队列，后续可升级 Redis + Asynq
-LLM：OpenAI-compatible API，支持 DeepSeek / OpenAI / Qwen 等
-部署：Docker / Docker Compose / Nginx / HTTPS
+GitHub pull_request webhook
+  -> HTTP server
+  -> webhook signature verification
+  -> supported event/action filtering
+  -> review job creation
+  -> background worker
+  -> GitHub App installation authentication
+  -> PR changed files retrieval
+  -> optional local workspace provider
+  -> LLM review request
+  -> structured result validation
+  -> PR comment upsert
+  -> advisory Check Run update
 ```
 
-## 目录结构
+Core packages:
 
 ```text
-cmd/server/          HTTP 服务入口
-internal/webhook/    GitHub Webhook 解析与签名校验
-internal/githubapp/  GitHub App 鉴权、JWT、Installation Token、API Client
-internal/review/     Review 主流程编排
-internal/llm/        OpenAI-compatible 模型客户端
-internal/comment/    GitHub 评论渲染与发布
-internal/storage/    任务、安装实例、评审结果持久化
-internal/worker/     异步 Review Worker
-internal/config/     服务配置和仓库配置解析
-deploy/              Docker、Nginx、部署配置
-scripts/             本地调试和自动化测试脚本
-docs/                设计文档、调研文档、路线图
+cmd/server/          service entrypoint and wiring
+internal/config/     typed environment configuration
+internal/webhook/    GitHub webhook verification and PR event parsing
+internal/githubapp/  GitHub App JWT and installation token authentication
+internal/review/     review orchestration, reporting, checkout planning, validation
+internal/llm/        OpenAI-compatible model client
+internal/comment/    PR comment rendering
+internal/worker/     asynchronous job processing
+deploy/              deployment artifacts, including systemd unit template
+scripts/             local smoke, safety, and health checks
+docs/                design, production, operations, research, and E2E docs
+openspec/            project specifications and milestone changes
 ```
 
-## 配置说明
+## GitHub App Setup
 
-创建 GitHub App 后，复制 `.env.example` 为 `.env` 并填写配置：
+Create a GitHub App and grant the minimum repository permissions needed by the current service:
+
+```text
+Metadata: Read-only
+Contents: Read-only
+Pull requests: Read and write
+Issues: Read and write
+Checks: Read and write
+```
+
+`Issues: write` is required because PR conversation comments use the Issues comment API. `Checks: write` is required for the advisory Check Run. AI findings are non-blocking; Check Run failures are reserved for service execution failures.
+
+Webhook settings:
+
+```text
+Payload URL: https://<your-public-host>/github/webhook
+Content type: application/json
+Secret: use the same value as GITHUB_WEBHOOK_SECRET
+Events: Pull request
+Supported actions: opened, synchronize, reopened
+```
+
+## Configuration
+
+Start from the example environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-关键配置：
+Required settings:
 
 ```text
-GITHUB_APP_ID                 GitHub App ID
-GITHUB_APP_PRIVATE_KEY_PATH   GitHub App private key 文件路径，生产环境优先使用挂载 secret 文件
-GITHUB_WEBHOOK_SECRET         GitHub Webhook Secret
-LLM_BASE_URL                  OpenAI-compatible API 地址
-LLM_API_KEY                   模型 API Key
-LLM_MODEL                     模型名称
-GO_WORKSPACE_PROVIDER_ENABLED 本地 workspace checkout 开关，默认 false
-GO_WORKSPACE_ROOT             显式启用 checkout 时使用的绝对 workspace 根目录
-DATABASE_PATH                 SQLite 数据库路径
+HTTP_ADDR
+PUBLIC_BASE_URL
+GITHUB_APP_ID
+GITHUB_APP_PRIVATE_KEY_PATH or GITHUB_APP_PRIVATE_KEY
+GITHUB_WEBHOOK_SECRET
+LLM_BASE_URL
+LLM_API_KEY
+LLM_MODEL
 ```
 
-M3 Check Run 状态上报还要求 GitHub App 增加 `Checks: Read and write` 权限；PR conversation summary comment 仍然需要 `Issues: Read and write` 权限。Check Run 结论保持 advisory/non-blocking，AI finding 本身不会让检查失败。
+Prefer `GITHUB_APP_PRIVATE_KEY_PATH` in production with a mounted secret file. `GITHUB_APP_PRIVATE_KEY` is useful for local tests but increases shell-history and accidental logging risk.
 
-生产部署、安全配置和真实 E2E 验证步骤见 [docs/production.md](docs/production.md)。本地部署 smoke test 可以先运行：
+Do not commit local environment files, private keys, installation tokens, API keys, local databases, generated binaries, raw webhook payloads, raw prompts, raw model responses, or filled private E2E evidence.
+
+## Workspace Checkout
+
+Local workspace checkout is disabled by default:
+
+```text
+GO_WORKSPACE_PROVIDER_ENABLED=false
+```
+
+Only enable it after the basic GitHub App review loop is already deployed and verified. When enabled, use a dedicated absolute root such as `/var/lib/github-ai-reviewer/workspaces`, owned by the service user and not shared with web roots, shell users, or backup jobs that could retain private source unexpectedly.
+
+Rollback is configuration-only: set `GO_WORKSPACE_PROVIDER_ENABLED=false` and restart the service.
+
+## Local Development
+
+Run the standard verification commands before submitting changes:
 
 ```bash
+go test ./...
+go build ./cmd/server
 scripts/smoke_local.sh
+scripts/check_e2e_safety.sh
+scripts/check_publication_safety.sh
 ```
 
-该脚本只构建服务、使用 dummy 非生产配置启动服务并检查 `/healthz`，不会调用 GitHub API、LLM、仓库 checkout、PR 评论或 Check Run。
+`smoke_local.sh` builds the service, starts it with dummy non-secret configuration, checks `/healthz`, and stops it. It does not call GitHub, call an LLM, clone a repository, publish comments, or create Check Runs.
 
-## 开发目标
+## Production Deployment
 
-第一阶段完成后，应满足以下验证标准：
+Read the production and operations runbooks before deploying:
 
-- GitHub App 可以安装到指定仓库。
-- 仓库创建或更新 PR 后，服务能收到 webhook。
-- 服务能通过 installation token 访问该仓库 PR 数据。
-- 服务能读取 PR 变更文件和 patch。
-- 服务能调用 LLM 生成评审摘要。
-- PR 页面能真实出现 AI Review 评论。
-- 服务日志能追踪一次完整 review job。
+- [Production hardening and E2E verification](docs/production.md)
+- [Operations runbook](docs/operations.md)
+- [E2E evidence template](docs/e2e-evidence-template.md)
 
-这才算项目真正跑通，而不是只完成代码骨架。
+The deployed service should run under systemd or an equivalent durable service manager. This repository includes a systemd unit template at [deploy/systemd/github-ai-reviewer.service](deploy/systemd/github-ai-reviewer.service).
+
+Basic production health checks:
+
+```bash
+systemctl is-active github-ai-reviewer.service
+curl -fsS http://127.0.0.1:8095/healthz
+curl -fsS https://<your-public-host>/healthz
+scripts/check_service_health.sh
+```
+
+Filled E2E evidence should stay outside git unless every identifier and excerpt is intentionally safe to publish.
+
+## Safety Checks
+
+The publication safety check validates that the public project material exists and that sensitive files are not tracked or staged:
+
+```bash
+scripts/check_publication_safety.sh
+```
+
+It reports file paths only. It does not read or print secret file contents.
+
+## Roadmap
+
+Planned future work:
+
+- Repository configuration file such as `.github/ai-review.yml`.
+- Inline review comments for high-confidence findings.
+- Static analyzer integration and finding verification.
+- Durable job storage and review history.
+- Better repository context selection for large changes.
+- Optional CLI or GitHub Action entrypoints.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
