@@ -104,7 +104,14 @@ smoke ok
 
 ## Real Deployment E2E Checklist
 
-Use a test repository and a non-sensitive PR.
+Use a test repository and a non-sensitive PR. Copy [e2e-evidence-template.md](e2e-evidence-template.md) to an untracked location for the filled run record, then run the safety check before staging changes:
+
+```bash
+cp docs/e2e-evidence-template.md tmp/e2e/YYYY-MM-DD.md
+scripts/check_e2e_safety.sh
+```
+
+The filled evidence file must not contain secrets, raw webhook payloads, raw prompts, raw model responses, installation tokens, private keys, or private source excerpts. Keep it outside git unless every identifier and excerpt is intentionally safe to publish.
 
 1. Confirm `/healthz` returns `ok` through the public deployment URL.
 2. Confirm GitHub webhook delivery receives HTTP 202 for supported `pull_request` actions: `opened`, `synchronize`, and `reopened`.

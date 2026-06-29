@@ -1,16 +1,16 @@
 ## 1. E2E Evidence Preparation
 
-- [ ] 1.1 Add a real deployment E2E evidence template that records only safe metadata and redacted identifiers.
-- [ ] 1.2 Add or update E2E runbook steps for deployment URL health, GitHub webhook delivery, supported PR action triggering, PR comment upsert, Check Run advisory behavior, and leak review.
-- [ ] 1.3 Add safe evidence collection guidance or helper commands that do not print secrets, private keys, installation tokens, LLM API keys, raw webhook payloads, raw prompts, raw model responses, or private source.
+- [x] 1.1 Add a real deployment E2E evidence template that records only safe metadata and redacted identifiers.
+- [x] 1.2 Add or update E2E runbook steps for deployment URL health, GitHub webhook delivery, supported PR action triggering, PR comment upsert, Check Run advisory behavior, and leak review.
+- [x] 1.3 Add safe evidence collection guidance or helper commands that do not print secrets, private keys, installation tokens, LLM API keys, raw webhook payloads, raw prompts, raw model responses, or private source.
 
 ## 2. Preflight Verification
 
-- [ ] 2.1 Run `go test ./...`.
-- [ ] 2.2 Run `go build ./cmd/server`.
-- [ ] 2.3 Run `scripts/smoke_local.sh`.
-- [ ] 2.4 Run `openspec validate m8-real-deployment-e2e --type change --strict`.
-- [ ] 2.5 Confirm `GO_WORKSPACE_PROVIDER_ENABLED=false` for E2E unless a later explicit proposal opts into checkout.
+- [x] 2.1 Run `go test ./...`.
+- [x] 2.2 Run `go build ./cmd/server`.
+- [x] 2.3 Run `scripts/smoke_local.sh`.
+- [x] 2.4 Run `openspec validate m8-real-deployment-e2e --type change --strict`.
+- [x] 2.5 Confirm `GO_WORKSPACE_PROVIDER_ENABLED=false` for E2E unless a later explicit proposal opts into checkout.
 
 ## 3. Real GitHub App E2E
 
