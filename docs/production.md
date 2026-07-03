@@ -46,6 +46,22 @@ LLM_MODEL
 
 Prefer `GITHUB_APP_PRIVATE_KEY_PATH` with a mounted secret file. `GITHUB_APP_PRIVATE_KEY` is useful for local smoke tests but increases accidental logging and shell-history risk.
 
+Optional review language:
+
+```text
+REVIEW_LANGUAGE=zh-CN
+```
+
+When unset, review prompts and PR comments default to English. Set `REVIEW_LANGUAGE=zh-CN` to ask the LLM for Simplified Chinese review content and render the bot's fixed PR comment labels in Chinese.
+
+Optional Check Run reporting:
+
+```text
+CHECK_RUN_ENABLED=false
+```
+
+Check Runs are enabled by default. If the GitHub App installation lacks `Checks: write`, the service degrades to PR summary comments without failing the review job; set `CHECK_RUN_ENABLED=false` to disable Check Run attempts entirely.
+
 ## Workspace Checkout
 
 Workspace checkout is disabled by default:

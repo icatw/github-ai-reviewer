@@ -23,60 +23,78 @@ type IssueCommenter interface {
 }
 
 type Publisher struct {
-	client IssueCommenter
+	client   IssueCommenter
+	language review.Language
+}
+
+type PublisherOptions struct {
+	Language review.Language
 }
 
 func NewPublisher(client IssueCommenter) *Publisher {
-	return &Publisher{client: client}
+	return NewPublisherWithOptions(client, PublisherOptions{})
+}
+
+func NewPublisherWithOptions(client IssueCommenter, opts PublisherOptions) *Publisher {
+	language := opts.Language
+	if language == "" {
+		language = review.LanguageEnglish
+	}
+	return &Publisher{client: client, language: language}
 }
 
 func Render(result review.ReviewResult) (string, bool) {
+	return RenderWithLanguage(result, review.LanguageEnglish)
+}
+
+func RenderWithLanguage(result review.ReviewResult, language review.Language) (string, bool) {
 	if !result.HasUsefulContent() {
 		return "", false
 	}
+	labels := labelsForLanguage(language)
 	var b strings.Builder
 	b.WriteString(Marker)
-	b.WriteString("\n## AI Review Summary\n\n")
+	fmt.Fprintf(&b, "\n## %s\n\n", labels.SummaryTitle)
 	if result.Summary != "" {
 		b.WriteString(result.Summary)
 		b.WriteString("\n\n")
 	}
 	if result.RiskScore != nil {
-		fmt.Fprintf(&b, "**Risk:** %d/100\n\n", *result.RiskScore)
+		fmt.Fprintf(&b, "**%s:** %d/100\n\n", labels.Risk, *result.RiskScore)
 	}
 	if len(result.Findings) > 0 {
-		b.WriteString("### Findings\n\n")
-		b.WriteString("Findings are advisory and non-blocking in this M2 review.\n\n")
+		fmt.Fprintf(&b, "### %s\n\n", labels.Findings)
+		fmt.Fprintf(&b, "%s\n\n", labels.Advisory)
 		for i, finding := range result.Findings {
 			fmt.Fprintf(&b, "%d. **%s: %s**\n", i+1, titleCase(finding.Severity), finding.Title)
 			if finding.Category != "" {
-				fmt.Fprintf(&b, "   - Category: %s\n", finding.Category)
+				fmt.Fprintf(&b, "   - %s: %s\n", labels.Category, finding.Category)
 			}
 			if finding.File != "" {
 				location := finding.File
 				if finding.Line != nil {
 					location = fmt.Sprintf("%s:%d", location, *finding.Line)
 				}
-				fmt.Fprintf(&b, "   - Location: %s\n", location)
+				fmt.Fprintf(&b, "   - %s: %s\n", labels.Location, location)
 			}
-			fmt.Fprintf(&b, "   - Evidence: %s\n", finding.Evidence)
-			fmt.Fprintf(&b, "   - Failure scenario: %s\n", finding.FailureScenario)
-			fmt.Fprintf(&b, "   - Suggestion: %s\n", finding.Suggestion)
+			fmt.Fprintf(&b, "   - %s: %s\n", labels.Evidence, finding.Evidence)
+			fmt.Fprintf(&b, "   - %s: %s\n", labels.FailureScenario, finding.FailureScenario)
+			fmt.Fprintf(&b, "   - %s: %s\n", labels.Suggestion, finding.Suggestion)
 			if finding.Confidence != nil {
-				fmt.Fprintf(&b, "   - Confidence: %.2f\n", *finding.Confidence)
+				fmt.Fprintf(&b, "   - %s: %.2f\n", labels.Confidence, *finding.Confidence)
 			}
 			b.WriteString("\n")
 		}
 	}
-	writeListSection(&b, "Missing Tests", result.MissingTests)
-	writeListSection(&b, "Limitations", result.Limitations)
+	writeListSection(&b, labels.MissingTests, result.MissingTests)
+	writeListSection(&b, labels.Limitations, result.Limitations)
 	body := strings.TrimRight(b.String(), "\n")
-	body += "\n\n---\nThis is a non-blocking AI-generated review based on the available PR diff context."
+	body += "\n\n---\n" + labels.Footer
 	return body, true
 }
 
 func (p *Publisher) Publish(ctx context.Context, installationID int64, owner, repo string, number int, result review.ReviewResult) error {
-	body, ok := Render(result)
+	body, ok := RenderWithLanguage(result, p.language)
 	if !ok {
 		return nil
 	}
@@ -111,4 +129,55 @@ func titleCase(value string) string {
 		return ""
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+type renderLabels struct {
+	SummaryTitle    string
+	Risk            string
+	Findings        string
+	Advisory        string
+	Category        string
+	Location        string
+	Evidence        string
+	FailureScenario string
+	Suggestion      string
+	Confidence      string
+	MissingTests    string
+	Limitations     string
+	Footer          string
+}
+
+func labelsForLanguage(language review.Language) renderLabels {
+	if language == review.LanguageSimplifiedChinese {
+		return renderLabels{
+			SummaryTitle:    "AI Review 总结",
+			Risk:            "风险",
+			Findings:        "发现的问题",
+			Advisory:        "以下发现仅作为建议，不会阻塞本次 M2 Review。",
+			Category:        "类别",
+			Location:        "位置",
+			Evidence:        "证据",
+			FailureScenario: "失败场景",
+			Suggestion:      "建议",
+			Confidence:      "置信度",
+			MissingTests:    "缺失的测试",
+			Limitations:     "限制",
+			Footer:          "这是基于当前 PR diff 上下文生成的非阻塞 AI Review。",
+		}
+	}
+	return renderLabels{
+		SummaryTitle:    "AI Review Summary",
+		Risk:            "Risk",
+		Findings:        "Findings",
+		Advisory:        "Findings are advisory and non-blocking in this M2 review.",
+		Category:        "Category",
+		Location:        "Location",
+		Evidence:        "Evidence",
+		FailureScenario: "Failure scenario",
+		Suggestion:      "Suggestion",
+		Confidence:      "Confidence",
+		MissingTests:    "Missing Tests",
+		Limitations:     "Limitations",
+		Footer:          "This is a non-blocking AI-generated review based on the available PR diff context.",
+	}
 }

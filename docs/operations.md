@@ -95,6 +95,16 @@ Expected routes:
 /github/webhook -> http://127.0.0.1:8095/github/webhook
 ```
 
+## GitHub App Permission Diagnostics
+
+Use this when logs show GitHub API `401`, `403`, or `404` for a repository or pull request. The diagnostic command reads `.env.production`, exchanges only the required GitHub App credentials, and prints safe status categories without tokens, private keys, webhook payloads, prompts, or model responses.
+
+```bash
+OWNER=icatw REPO=interview-pilot PULL=7 scripts/diagnose_github_app.sh
+```
+
+It checks repository installation discovery, installation token exchange, pull request metadata, PR changed files, PR issue comments, and advisory Check Run access. A Check Run warning does not block PR summary comments; failures in pull request metadata or changed files usually mean the App is not installed on that repository, the installation ID is stale, or repository permissions are missing.
+
 ## Safe Deployment Update
 
 ```bash

@@ -82,6 +82,35 @@ func TestRenderPartialResult(t *testing.T) {
 	}
 }
 
+func TestRenderWithSimplifiedChineseLabels(t *testing.T) {
+	risk := 20
+	body, ok := RenderWithLanguage(review.ReviewResult{
+		Summary:      "整体风险较低。",
+		RiskScore:    &risk,
+		MissingTests: []string{"补充异常路径测试"},
+		Limitations:  []string{"仅分析了 diff 上下文。"},
+	}, review.LanguageSimplifiedChinese)
+	if !ok {
+		t.Fatal("RenderWithLanguage() ok = false, want true")
+	}
+	for _, want := range []string{"## AI Review 总结", "**风险:** 20/100", "### 缺失的测试", "### 限制", "非阻塞 AI Review"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestPublisherUsesConfiguredLanguage(t *testing.T) {
+	fake := &fakeIssueCommenter{}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{Language: review.LanguageSimplifiedChinese})
+	if err := pub.Publish(context.Background(), 42, "octo", "repo", 7, review.ReviewResult{Summary: "中文总结"}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if !strings.Contains(fake.createdBody, "## AI Review 总结") || !strings.Contains(fake.createdBody, "中文总结") {
+		t.Fatalf("created body did not use Chinese labels: %s", fake.createdBody)
+	}
+}
+
 func TestPublisherCreatesWhenNoMarkerCommentExists(t *testing.T) {
 	fake := &fakeIssueCommenter{}
 	pub := NewPublisher(fake)

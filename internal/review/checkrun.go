@@ -2,7 +2,9 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 )
 
 const (
@@ -112,15 +114,24 @@ func (r *CheckRunReporter) JobFailed(ctx context.Context, job Job, failure Failu
 func (r *CheckRunReporter) upsert(ctx context.Context, job Job, create CheckRunCreateRequest, update CheckRunUpdateRequest) error {
 	run, ok, err := r.match(ctx, job)
 	if err != nil {
+		if shouldDegradeCheckRun(err) {
+			return nil
+		}
 		return checkRunFailure(err)
 	}
 	if ok {
 		if err := r.client.UpdateCheckRun(ctx, job.InstallationID, job.Owner, job.Repo, run.ID, update); err != nil {
+			if shouldDegradeCheckRun(err) {
+				return nil
+			}
 			return checkRunFailure(err)
 		}
 		return nil
 	}
 	if _, err := r.client.CreateCheckRun(ctx, job.InstallationID, job.Owner, job.Repo, create); err != nil {
+		if shouldDegradeCheckRun(err) {
+			return nil
+		}
 		return checkRunFailure(err)
 	}
 	return nil
@@ -152,6 +163,19 @@ func (r *CheckRunReporter) match(ctx context.Context, job Job) (CheckRun, bool, 
 
 func checkRunFailure(err error) ReporterFailure {
 	return ReporterFailure{Reporter: checkRunReporterName, Category: FailureCategoryGitHub}
+}
+
+func shouldDegradeCheckRun(err error) bool {
+	var statusErr GitHubStatusClassifier
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	switch statusErr.GitHubStatusCode() {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return true
+	default:
+		return false
+	}
 }
 
 func completedSummary(result ReviewResult) string {

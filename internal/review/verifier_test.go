@@ -188,6 +188,30 @@ func TestVerifierEvalFixtures(t *testing.T) {
 			},
 		},
 		{
+			name: "related source evidence supports cross file finding",
+			context: RepoContext{
+				Patches:        []PatchContext{{Path: "internal/service.go", Patch: "@@ -1 +1 @@\n+return shared.Validate(input)\n"}},
+				FullFiles:      []FileContext{{Path: "internal/service.go", Content: "package internal\nfunc Save(input string) error { return shared.Validate(input) }\n"}},
+				RelatedSources: []FileContext{{Path: "internal/shared/validate.go", Content: "package shared\nfunc Validate(input string) error { return nil }\n"}},
+			},
+			raw: ReviewResult{Summary: "One issue.", Findings: []Finding{{
+				Severity:        "warning",
+				Category:        "correctness",
+				File:            "internal/shared/validate.go",
+				Title:           "Validation accepts every input",
+				Evidence:        "func Validate(input string) error",
+				FailureScenario: "Invalid input can be saved.",
+				Suggestion:      "Validate input before returning nil.",
+			}}},
+			wantFindings: []wantVerifiedFinding{{Severity: "warning", File: "internal/shared/validate.go", Evidence: "func Validate(input string) error"}},
+			wantStats: VerificationStats{
+				TotalFindings: 1,
+				Kept:          1,
+				KeptRate:      1,
+				Reasons:       map[VerificationReason]int{VerificationReasonSupported: 1},
+			},
+		},
+		{
 			name: "related test evidence supports missing test finding",
 			context: RepoContext{
 				Patches:      []PatchContext{{Path: "internal/http.go", Patch: "@@ -1 +1 @@\n+return client.Do(req)\n"}},

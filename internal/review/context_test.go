@@ -57,7 +57,7 @@ func TestBuildRepoContextIncludesFullFilesRelatedTestsDocsAndOmissions(t *testin
 	if paths(got.RelatedTests) != "pkg/foo_test.go,pkg/bar_test.go" {
 		t.Fatalf("related test paths = %s", paths(got.RelatedTests))
 	}
-	if paths(got.RepoDocs) != "README.md,docs/a.md,docs/b.md,.github/ai-review.yml" {
+	if paths(got.RepoDocs) != ".github/ai-review.yml" {
 		t.Fatalf("repo docs paths = %s", paths(got.RepoDocs))
 	}
 	reasons := omissionReasons(got.Omitted)
@@ -71,7 +71,6 @@ func TestBuildRepoContextIncludesFullFilesRelatedTestsDocsAndOmissions(t *testin
 		"pkg/huge.go:full_file_context:oversized",
 		"pkg/missing.go:full_file_context:missing",
 		"pkg/fetcherr.go:full_file_context:fetch_error",
-		"docs/c.md:repo_docs_context:budget_exhausted",
 	} {
 		if !contains(reasons, want) {
 			t.Fatalf("omissions missing %q in %#v", want, reasons)
@@ -79,6 +78,106 @@ func TestBuildRepoContextIncludesFullFilesRelatedTestsDocsAndOmissions(t *testin
 	}
 	if got.FullFiles[0].Content != "package pkg\nfunc Foo() {}\n" {
 		t.Fatalf("full file content = %q", got.FullFiles[0].Content)
+	}
+}
+
+func TestBuildRepoContextIncludesRelatedGoSources(t *testing.T) {
+	reader := &fakeRepoReader{
+		contents: map[string]string{
+			"go.mod":                  "module example.com/app\n",
+			"pkg/foo.go":              "package pkg\n\nimport \"example.com/app/internal/shared\"\n\nfunc Foo() { shared.Util() }\n",
+			"pkg/helper.go":           "package pkg\nfunc Helper() {}\n",
+			"pkg/foo_test.go":         "package pkg\nfunc TestFoo() {}\n",
+			"internal/shared/util.go": "package shared\nfunc Util() {}\n",
+			"internal/shared/more.go": "package shared\nfunc More() {}\n",
+		},
+		dirs: map[string][]RepositoryEntry{
+			"pkg": {
+				{Path: "pkg/foo.go", Type: RepositoryEntryFile},
+				{Path: "pkg/foo_test.go", Type: RepositoryEntryFile},
+				{Path: "pkg/helper.go", Type: RepositoryEntryFile},
+			},
+			"internal/shared": {
+				{Path: "internal/shared/more.go", Type: RepositoryEntryFile},
+				{Path: "internal/shared/util.go", Type: RepositoryEntryFile},
+			},
+		},
+	}
+
+	got := BuildRepoContext(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", HeadSHA: "abc"}, []FileChange{{Filename: "pkg/foo.go", Status: "modified"}}, reader, DefaultContextBudgets)
+
+	if paths(got.FullFiles) != "pkg/foo.go" {
+		t.Fatalf("full file paths = %s", paths(got.FullFiles))
+	}
+	if paths(got.RelatedSources) != "internal/shared/util.go" {
+		t.Fatalf("related source paths = %s", paths(got.RelatedSources))
+	}
+	if paths(got.RelatedTests) != "pkg/foo_test.go" {
+		t.Fatalf("related test paths = %s", paths(got.RelatedTests))
+	}
+}
+
+func TestBuildRepoContextIncludesRelatedPythonSourcesAndTests(t *testing.T) {
+	reader := &fakeRepoReader{
+		contents: map[string]string{
+			"app/api/user.py":       "from app.services.user import create_user\nfrom .schemas import UserRequest\n\ndef route(): pass\n",
+			"app/api/schemas.py":    "class UserRequest: pass\n",
+			"app/api/test_user.py":  "def test_route(): pass\n",
+			"app/services/user.py":  "def create_user(): pass\n",
+			"app/services/audit.py": "def audit(): pass\n",
+			"tests/test_user.py":    "def test_user_flow(): pass\n",
+		},
+		dirs: map[string][]RepositoryEntry{
+			"": {
+				{Path: "app/api/user.py", Type: RepositoryEntryFile},
+			},
+			"app/api": {
+				{Path: "app/api/schemas.py", Type: RepositoryEntryFile},
+				{Path: "app/api/test_user.py", Type: RepositoryEntryFile},
+				{Path: "app/api/user.py", Type: RepositoryEntryFile},
+			},
+			"app/services": {
+				{Path: "app/services/audit.py", Type: RepositoryEntryFile},
+				{Path: "app/services/user.py", Type: RepositoryEntryFile},
+			},
+		},
+	}
+
+	got := BuildRepoContext(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", HeadSHA: "abc"}, []FileChange{{Filename: "app/api/user.py", Status: "modified"}}, reader, DefaultContextBudgets)
+
+	if paths(got.FullFiles) != "app/api/user.py" {
+		t.Fatalf("full file paths = %s", paths(got.FullFiles))
+	}
+	if paths(got.RelatedSources) != "app/api/schemas.py,app/services/user.py" {
+		t.Fatalf("related source paths = %s", paths(got.RelatedSources))
+	}
+	if paths(got.RelatedTests) != "app/api/test_user.py,tests/test_user.py" {
+		t.Fatalf("related test paths = %s", paths(got.RelatedTests))
+	}
+}
+
+func TestBuildRepoContextFiltersDocsByRelevance(t *testing.T) {
+	reader := &fakeRepoReader{
+		contents: map[string]string{
+			"pkg/auth.go":           "package pkg\nfunc RequireAuth() {}\n",
+			"README.md":             "# Generic repo introduction\n",
+			"docs/security.md":      "All auth changes must preserve permission checks.\n",
+			"docs/deployment.md":    "Deployment notes only.\n",
+			".github/ai-review.yml": "language: zh-CN\n",
+		},
+		dirs: map[string][]RepositoryEntry{
+			"pkg": {},
+			"docs": {
+				{Path: "docs/deployment.md", Type: RepositoryEntryFile},
+				{Path: "docs/security.md", Type: RepositoryEntryFile},
+			},
+		},
+	}
+
+	got := BuildRepoContext(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", HeadSHA: "abc"}, []FileChange{{Filename: "pkg/auth.go", Status: "modified", Patch: "@@ auth permission"}}, reader, DefaultContextBudgets)
+
+	if paths(got.RepoDocs) != "docs/security.md,.github/ai-review.yml" {
+		t.Fatalf("repo docs paths = %s", paths(got.RepoDocs))
 	}
 }
 
@@ -128,8 +227,6 @@ func TestBuildRepoContextDedupesRelatedTestsAndAppliesBudgetsDeterministically(t
 	reasons := omissionReasons(first.Omitted)
 	for _, want := range []string{
 		"pkg/common_test.go:related_test_context:budget_exhausted",
-		"README.md:repo_docs_context:budget_exhausted",
-		"docs/a.md:repo_docs_context:budget_exhausted",
 	} {
 		if !contains(reasons, want) {
 			t.Fatalf("omissions missing %q in %#v", want, reasons)
@@ -178,16 +275,17 @@ func TestBuildRepoContextRecordsMissingDirectTestAndTruncatesWithinTotalBudget(t
 
 func TestBuildPromptRendersStableRepoAwareSections(t *testing.T) {
 	ctx := RepoContext{
-		Patches:      []PatchContext{{Path: "main.go", Status: "modified", Additions: 1, Deletions: 0, Patch: "@@ patch"}},
-		FullFiles:    []FileContext{{Path: "main.go", Content: "package main\n"}},
-		RelatedTests: []FileContext{{Path: "main_test.go", Content: "package main\n"}},
-		RepoDocs:     []FileContext{{Path: "README.md", Content: "# repo\n"}},
-		Omitted:      []OmittedContext{{Path: "big.go", Section: SectionFullFile, Reason: OmitOversized}},
+		Patches:        []PatchContext{{Path: "main.go", Status: "modified", Additions: 1, Deletions: 0, Patch: "@@ patch"}},
+		FullFiles:      []FileContext{{Path: "main.go", Content: "package main\n"}},
+		RelatedSources: []FileContext{{Path: "helper.go", Content: "package main\n"}},
+		RelatedTests:   []FileContext{{Path: "main_test.go", Content: "package main\n"}},
+		RepoDocs:       []FileContext{{Path: "README.md", Content: "# repo\n"}},
+		Omitted:        []OmittedContext{{Path: "big.go", Section: SectionFullFile, Reason: OmitOversized}},
 	}
 
 	prompt := BuildPromptWithContext(Job{Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc", Action: "opened"}, ctx)
 
-	for _, want := range []string{"patch_context", "full_file_context", "related_test_context", "repo_docs_context", "omitted_context", "Review pull request octo/repo#7", "JSON-only"} {
+	for _, want := range []string{"patch_context", "full_file_context", "related_source_context", "related_test_context", "repo_docs_context", "omitted_context", "Review pull request octo/repo#7", "JSON-only"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}

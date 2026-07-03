@@ -13,6 +13,10 @@ const (
 	FailureCategoryReporter = "reporter_error"
 )
 
+type GitHubStatusClassifier interface {
+	GitHubStatusCode() int
+}
+
 type Failure struct {
 	Category string
 	Message  string

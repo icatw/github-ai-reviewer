@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,37 @@ func TestGenerateJWT(t *testing.T) {
 	}
 	if strings.Count(token, ".") != 2 {
 		t.Fatalf("JWT() = %q, want compact token", token)
+	}
+}
+
+func TestClientResolvesRepositoryInstallation(t *testing.T) {
+	key := testPrivateKey(t)
+	var sawJWT bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/installation":
+			sawJWT = strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                   42,
+				"repository_selection": "selected",
+				"account":              map[string]any{"login": "octo"},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	installation, err := client.ResolveRepositoryInstallation(context.Background(), "octo", "repo")
+	if err != nil {
+		t.Fatalf("ResolveRepositoryInstallation() error = %v", err)
+	}
+	if installation.ID != 42 || installation.AccountLogin != "octo" || installation.RepositorySelection != "selected" || !sawJWT {
+		t.Fatalf("installation=%+v sawJWT=%v", installation, sawJWT)
 	}
 }
 
@@ -147,6 +179,66 @@ func TestClientExchangesTokenFetchesFilesAndPublishesComment(t *testing.T) {
 	}
 	if !sawJWT || !sawToken {
 		t.Fatalf("sawJWT=%v sawToken=%v", sawJWT, sawToken)
+	}
+}
+
+func TestClientClassifiesGitHubHTTPError(t *testing.T) {
+	key := testPrivateKey(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/pulls/7/files":
+			http.Error(w, "bad credentials", http.StatusUnauthorized)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.FetchPullRequestFiles(context.Background(), 42, "octo", "repo", 7)
+	if err == nil {
+		t.Fatal("FetchPullRequestFiles() error = nil")
+	}
+	var httpErr HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %T, want HTTPError", err)
+	}
+	if httpErr.Status != http.StatusUnauthorized || httpErr.Category() != "github_unauthorized" || !IsHTTPStatus(err, http.StatusUnauthorized) {
+		t.Fatalf("httpErr = %+v category=%s", httpErr, httpErr.Category())
+	}
+}
+
+func TestClientResolvesPullRequestHeadSHA(t *testing.T) {
+	key := testPrivateKey(t)
+	var sawPull bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/pulls/7":
+			sawPull = r.Header.Get("Authorization") == "Bearer installation-token"
+			_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": "abc123"}})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	headSHA, err := client.ResolvePullRequestHeadSHA(context.Background(), 42, "octo", "repo", 7)
+	if err != nil {
+		t.Fatalf("ResolvePullRequestHeadSHA() error = %v", err)
+	}
+	if headSHA != "abc123" || !sawPull {
+		t.Fatalf("headSHA=%q sawPull=%v", headSHA, sawPull)
 	}
 }
 

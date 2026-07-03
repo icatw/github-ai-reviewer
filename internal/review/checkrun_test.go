@@ -170,6 +170,31 @@ func TestCheckRunReporterReturnsSafeCategoryWhenClientFails(t *testing.T) {
 	}
 }
 
+func TestCheckRunReporterDegradesPermissionErrors(t *testing.T) {
+	reporter := NewCheckRunReporter(&fakeCheckRunClient{listErr: fakeGitHubStatusError{status: 401}})
+
+	err := reporter.JobStarted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"})
+	if err != nil {
+		t.Fatalf("JobStarted() error = %v, want nil degradation", err)
+	}
+}
+
+func TestCheckRunReporterStillReportsServerErrors(t *testing.T) {
+	reporter := NewCheckRunReporter(&fakeCheckRunClient{listErr: fakeGitHubStatusError{status: 500}})
+
+	err := reporter.JobStarted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"})
+	if err == nil {
+		t.Fatal("JobStarted() error = nil, want server error report")
+	}
+	var failure ReporterFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("error = %T, want ReporterFailure", err)
+	}
+	if failure.Reporter != "github_check_run" || failure.Category != FailureCategoryGitHub {
+		t.Fatalf("failure = %+v", failure)
+	}
+}
+
 type fakeCheckRunClient struct {
 	runs    []CheckRun
 	created []CheckRunCreateRequest
@@ -199,4 +224,16 @@ func (f *fakeCheckRunClient) UpdateCheckRun(ctx context.Context, installationID 
 type fakeCheckRunUpdate struct {
 	ID      int64
 	Request CheckRunUpdateRequest
+}
+
+type fakeGitHubStatusError struct {
+	status int
+}
+
+func (e fakeGitHubStatusError) Error() string {
+	return "github status error"
+}
+
+func (e fakeGitHubStatusError) GitHubStatusCode() int {
+	return e.status
 }

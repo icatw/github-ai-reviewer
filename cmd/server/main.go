@@ -29,11 +29,14 @@ func main() {
 	if err != nil {
 		logger.Fatalf("github app setup error: %v", err)
 	}
-	llmClient := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, nil)
-	publisher := comment.NewPublisher(gh)
+	language := review.NormalizeLanguage(cfg.LLM.Language)
+	llmClient := llm.NewClientWithOptions(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, nil, llm.ClientOptions{Language: language})
+	publisher := comment.NewPublisherWithOptions(gh, comment.PublisherOptions{Language: language})
 	reporters := review.MultiReporter{
 		comment.NewReporter(publisher),
-		review.NewCheckRunReporter(gh),
+	}
+	if cfg.CheckRun.Enabled {
+		reporters = append(reporters, review.NewCheckRunReporter(gh))
 	}
 	reviewSvc := buildReviewService(cfg, reviewServiceDeps{
 		github:             gh,
@@ -45,7 +48,7 @@ func main() {
 	w := worker.New(reviewSvc, logger)
 	w.Start(context.Background())
 
-	handler := server.New(cfg.GitHub.WebhookSecret, w)
+	handler := server.NewWithResolver(cfg.GitHub.WebhookSecret, w, gh)
 	logger.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, handler); err != nil {
 		logger.Fatalf("server error: %v", err)

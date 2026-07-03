@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 )
 
 type Job struct {
@@ -32,6 +33,22 @@ type LLMClient interface {
 	Review(ctx context.Context, prompt string) (ReviewResult, error)
 }
 
+type Language string
+
+const (
+	LanguageEnglish           Language = "en"
+	LanguageSimplifiedChinese Language = "zh-CN"
+)
+
+func NormalizeLanguage(language string) Language {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "zh-cn", "zh_hans", "zh-hans", "chinese", "中文":
+		return LanguageSimplifiedChinese
+	default:
+		return LanguageEnglish
+	}
+}
+
 type Analyzer interface {
 	Analyze(ctx context.Context, job Job, repoContext RepoContext) GoAnalyzerResult
 }
@@ -42,14 +59,32 @@ type Service struct {
 	reporter   Reporter
 	logger     *log.Logger
 	goAnalyzer Analyzer
+	language   Language
+}
+
+type ServiceOptions struct {
+	Language Language
 }
 
 func NewService(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger) *Service {
-	return &Service{github: github, llm: llm, reporter: reporter, logger: logger, goAnalyzer: NewGoAnalyzer(nil, nil, GoAnalyzerOptions{})}
+	return NewServiceWithOptions(github, llm, reporter, logger, ServiceOptions{})
+}
+
+func NewServiceWithOptions(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger, opts ServiceOptions) *Service {
+	language := opts.Language
+	if language == "" {
+		language = LanguageEnglish
+	}
+	return &Service{github: github, llm: llm, reporter: reporter, logger: logger, goAnalyzer: NewGoAnalyzer(nil, nil, GoAnalyzerOptions{}), language: language}
 }
 
 func NewServiceWithWorkspaceProvider(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger, provider GoWorkspaceProvider) *Service {
-	svc := NewService(github, llm, reporter, logger)
+	svc := NewServiceWithWorkspaceProviderAndOptions(github, llm, reporter, logger, provider, ServiceOptions{})
+	return svc
+}
+
+func NewServiceWithWorkspaceProviderAndOptions(github GitHubClient, llm LLMClient, reporter Reporter, logger *log.Logger, provider GoWorkspaceProvider, opts ServiceOptions) *Service {
+	svc := NewServiceWithOptions(github, llm, reporter, logger, opts)
 	svc.SetGoAnalyzer(NewGoAnalyzer(provider, nil, GoAnalyzerOptions{}))
 	return svc
 }
@@ -74,13 +109,13 @@ func (s *Service) Process(ctx context.Context, job Job) error {
 	if reader, ok := s.github.(RepositoryReader); ok {
 		repoContext = BuildRepoContext(ctx, job, files, reader, DefaultContextBudgets)
 	}
-	s.logf("review context built delivery=%s repo=%s/%s pull=%d patches=%d full_files=%d related_tests=%d repo_docs=%d omitted=%d", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, len(repoContext.Patches), len(repoContext.FullFiles), len(repoContext.RelatedTests), len(repoContext.RepoDocs), len(repoContext.Omitted))
+	s.logf("review context built delivery=%s repo=%s/%s pull=%d patches=%d full_files=%d related_sources=%d related_tests=%d repo_docs=%d omitted=%d", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, len(repoContext.Patches), len(repoContext.FullFiles), len(repoContext.RelatedSources), len(repoContext.RelatedTests), len(repoContext.RepoDocs), len(repoContext.Omitted))
 	if s.goAnalyzer != nil {
 		analyzerResult := s.goAnalyzer.Analyze(ctx, job, repoContext)
 		repoContext.StaticChecks = append(repoContext.StaticChecks, analyzerResult.Evidence...)
 		s.logAnalyzerStats(job, analyzerResult.Stats)
 	}
-	result, err := s.llm.Review(ctx, BuildPromptWithContext(job, repoContext))
+	result, err := s.llm.Review(ctx, BuildPromptWithContextAndLanguage(job, repoContext, s.language))
 	if err != nil {
 		category := reviewErrorCategory(err)
 		s.logf("review job failed stage=llm category=%s delivery=%s repo=%s/%s pull=%d error=%v", category, job.DeliveryID, job.Owner, job.Repo, job.PullNumber, err)

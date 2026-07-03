@@ -52,6 +52,74 @@ func TestParseDeliveryIgnoresUnsupportedPullRequestAction(t *testing.T) {
 	}
 }
 
+func TestParseDeliveryExtractsExactIssueCommentCommand(t *testing.T) {
+	payload := []byte(`{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review"}}`)
+	result, err := ParseDelivery("issue_comment", "delivery-command", payload)
+	if err != nil {
+		t.Fatalf("ParseDelivery() error = %v", err)
+	}
+	if result.Ignored || result.Command == nil || result.Job != nil {
+		t.Fatalf("result = %+v, want command without job", result)
+	}
+	command := *result.Command
+	if command.InstallationID != 42 || command.Owner != "octo" || command.Repo != "repo" || command.PullNumber != 7 || command.Action != "created" || command.DeliveryID != "delivery-command" {
+		t.Fatalf("unexpected command: %+v", command)
+	}
+}
+
+func TestParseDeliveryExtractsIssueCommentCommandWithWhitespace(t *testing.T) {
+	payload := []byte(`{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review please"}}`)
+	result, err := ParseDelivery("issue_comment", "delivery-command", payload)
+	if err != nil {
+		t.Fatalf("ParseDelivery() error = %v", err)
+	}
+	if result.Ignored || result.Command == nil {
+		t.Fatalf("result = %+v, want command", result)
+	}
+}
+
+func TestParseDeliveryIgnoresIssueCommentNonCommandsPlainIssuesAndUnsupportedActions(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "non-command",
+			payload: `{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"please review"}}`,
+		},
+		{
+			name:    "lookalike",
+			payload: `{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-reviewer"}}`,
+		},
+		{
+			name:    "plain-issue",
+			payload: `{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7},"comment":{"body":"/ai-review"}}`,
+		},
+		{
+			name:    "unsupported-action",
+			payload: `{"action":"edited","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ParseDelivery("issue_comment", "delivery-ignore", []byte(tt.payload))
+			if err != nil {
+				t.Fatalf("ParseDelivery() error = %v", err)
+			}
+			if !result.Ignored || result.Job != nil || result.Command != nil {
+				t.Fatalf("result = %+v, want ignored without job or command", result)
+			}
+		})
+	}
+}
+
+func TestParseDeliveryRejectsIssueCommentMissingFields(t *testing.T) {
+	payload := []byte(`{"action":"created","installation":{"id":42},"repository":{"name":"repo"},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review"}}`)
+	if _, err := ParseDelivery("issue_comment", "delivery-missing", payload); err == nil {
+		t.Fatal("ParseDelivery() error = nil, want missing field error")
+	}
+}
+
 func TestParseDeliveryRejectsMissingFields(t *testing.T) {
 	payload := []byte(`{"action":"opened","installation":{"id":42},"repository":{"name":"repo"},"pull_request":{"number":7,"head":{"sha":"abc123"}}}`)
 	if _, err := ParseDelivery("pull_request", "delivery-3", payload); err == nil {

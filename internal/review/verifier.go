@@ -28,6 +28,7 @@ const (
 
 	EvidenceSourcePatch       EvidenceSourceType = "patch_context"
 	EvidenceSourceFullFile    EvidenceSourceType = "full_file_context"
+	EvidenceSourceRelatedSrc  EvidenceSourceType = "related_source_context"
 	EvidenceSourceRelatedTest EvidenceSourceType = "related_test_context"
 	EvidenceSourceRepoDocs    EvidenceSourceType = "repo_docs_context"
 	EvidenceSourceOmitted     EvidenceSourceType = "omitted_context"
@@ -130,6 +131,14 @@ func BuildEvidenceIndex(ctx RepoContext) EvidenceIndex {
 	for _, file := range ctx.FullFiles {
 		index.addSource(EvidenceSource{
 			Type:    EvidenceSourceFullFile,
+			Path:    file.Path,
+			Content: file.Content,
+			Lines:   fullFileLineSet(file.Content),
+		})
+	}
+	for _, file := range ctx.RelatedSources {
+		index.addSource(EvidenceSource{
+			Type:    EvidenceSourceRelatedSrc,
 			Path:    file.Path,
 			Content: file.Content,
 			Lines:   fullFileLineSet(file.Content),
@@ -462,7 +471,7 @@ func sourceCompatible(finding Finding, filePath string, source EvidenceSource) b
 		filePath,
 	}, " "))
 	switch source.Type {
-	case EvidenceSourcePatch, EvidenceSourceFullFile, EvidenceSourceStaticCheck:
+	case EvidenceSourcePatch, EvidenceSourceFullFile, EvidenceSourceRelatedSrc, EvidenceSourceStaticCheck:
 		return true
 	case EvidenceSourceRelatedTest:
 		return isTestPath(filePath) || strings.Contains(claim, "test") || strings.Contains(claim, "coverage")

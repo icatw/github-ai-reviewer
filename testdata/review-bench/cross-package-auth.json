@@ -1,0 +1,43 @@
+{
+  "name": "cross-package-auth-change",
+  "job": {
+    "Owner": "octo",
+    "Repo": "repo",
+    "PullNumber": 9,
+    "HeadSHA": "abc",
+    "Action": "opened"
+  },
+  "files": [
+    {
+      "Filename": "handler/user.go",
+      "Status": "modified",
+      "Additions": 3,
+      "Deletions": 1,
+      "Patch": "@@ -10,6 +10,8 @@ func Handle() {\n+\t// changed auth flow\n"
+    }
+  ],
+  "repo_files": {
+    "go.mod": "module example.com/repo\n",
+    "handler/user.go": "package handler\n\nimport \"example.com/repo/service\"\n\nfunc Handle() {\n\tservice.RequireAuth()\n}\n",
+    "handler/user_test.go": "package handler\n\nfunc TestHandleRequiresAuth() {}\n",
+    "handler/route.go": "package handler\n\nfunc Route() {}\n",
+    "service/auth.go": "package service\n\nfunc RequireAuth() error { return nil }\n",
+    "service/profile.go": "package service\n\nfunc LoadProfile() {}\n",
+    "README.md": "# Example service\n",
+    "docs/security.md": "All user handlers must require auth.\n",
+    ".github/ai-review.yml": "language: zh-CN\n"
+  },
+  "golden_relevant_files": [
+    "handler/user.go",
+    "handler/user_test.go",
+    "service/auth.go",
+    "docs/security.md"
+  ],
+  "expected_findings": [
+    {
+      "file": "handler/user.go",
+      "title": "auth flow change must preserve required authentication",
+      "evidence": "docs/security.md states all user handlers must require auth"
+    }
+  ]
+}

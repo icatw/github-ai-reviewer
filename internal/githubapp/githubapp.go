@@ -54,6 +54,55 @@ type Client struct {
 	tokens    map[int64]string
 }
 
+type Installation struct {
+	ID                  int64
+	AccountLogin        string
+	RepositorySelection string
+}
+
+type HTTPError struct {
+	Method string
+	Path   string
+	Status int
+}
+
+func (e HTTPError) Error() string {
+	return fmt.Sprintf("github request failed: %s %s status %d category=%s", e.Method, e.Path, e.Status, e.Category())
+}
+
+func (e HTTPError) GitHubStatusCode() int {
+	return e.Status
+}
+
+func (e HTTPError) Category() string {
+	switch e.Status {
+	case http.StatusUnauthorized:
+		return "github_unauthorized"
+	case http.StatusForbidden:
+		return "github_forbidden"
+	case http.StatusNotFound:
+		return "github_not_found"
+	default:
+		if e.Status >= 500 {
+			return "github_server_error"
+		}
+		return "github_http_error"
+	}
+}
+
+func IsHTTPStatus(err error, statuses ...int) bool {
+	var httpErr HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	for _, status := range statuses {
+		if httpErr.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
 func NewClient(appID int64, privateKeyPEM, baseURL string, httpClient *http.Client) (*Client, error) {
 	auth, err := NewAuth(appID, privateKeyPEM)
 	if err != nil {
@@ -66,6 +115,22 @@ func NewClient(appID int64, privateKeyPEM, baseURL string, httpClient *http.Clie
 		baseURL = "https://api.github.com"
 	}
 	return &Client{auth: auth, baseURL: strings.TrimRight(baseURL, "/"), http: httpClient, tokens: map[int64]string{}}, nil
+}
+
+func (c *Client) ResolveRepositoryInstallation(ctx context.Context, owner, repo string) (Installation, error) {
+	appJWT, err := c.auth.JWT()
+	if err != nil {
+		return Installation{}, err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/installation", owner, repo)
+	var out githubInstallation
+	if err := c.doJSON(ctx, http.MethodGet, path, appJWT, nil, &out, http.StatusOK); err != nil {
+		return Installation{}, err
+	}
+	if out.ID == 0 {
+		return Installation{}, errors.New("repository installation response missing id")
+	}
+	return Installation{ID: out.ID, AccountLogin: out.Account.Login, RepositorySelection: out.RepositorySelection}, nil
 }
 
 func (c *Client) FetchPullRequestFiles(ctx context.Context, installationID int64, owner, repo string, pullNumber int) ([]review.FileChange, error) {
@@ -89,6 +154,22 @@ func (c *Client) FetchPullRequestFiles(ctx context.Context, installationID int64
 		})
 	}
 	return out, nil
+}
+
+func (c *Client) ResolvePullRequestHeadSHA(ctx context.Context, installationID int64, owner, repo string, pullNumber int) (string, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return "", err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, pullNumber)
+	var out githubPullRequest
+	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &out, http.StatusOK); err != nil {
+		return "", err
+	}
+	if out.Head.SHA == "" {
+		return "", errors.New("pull request response missing head sha")
+	}
+	return out.Head.SHA, nil
 }
 
 func (c *Client) FetchFileContent(ctx context.Context, installationID int64, owner, repo, ref, filePath string) (string, error) {
@@ -292,7 +373,7 @@ func (c *Client) doJSON(ctx context.Context, method, path, bearer string, in any
 			return nil
 		}
 	}
-	return fmt.Errorf("github request failed: %s %s status %d", method, path, resp.StatusCode)
+	return HTTPError{Method: method, Path: path, Status: resp.StatusCode}
 }
 
 func parsePrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
@@ -320,6 +401,20 @@ type githubFile struct {
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
 	Patch     string `json:"patch"`
+}
+
+type githubInstallation struct {
+	ID                  int64  `json:"id"`
+	RepositorySelection string `json:"repository_selection"`
+	Account             struct {
+		Login string `json:"login"`
+	} `json:"account"`
+}
+
+type githubPullRequest struct {
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
 }
 
 type githubIssueComment struct {
@@ -370,7 +465,7 @@ func contentPath(owner, repo, repoPath, ref string) string {
 }
 
 func isNotFound(err error) bool {
-	return strings.Contains(err.Error(), "status 404")
+	return IsHTTPStatus(err, http.StatusNotFound)
 }
 
 type githubContent struct {

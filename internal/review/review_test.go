@@ -45,6 +45,19 @@ func TestServiceProcessesJobEndToEnd(t *testing.T) {
 	}
 }
 
+func TestServiceChineseLanguageAddsPromptInstruction(t *testing.T) {
+	gh := &fakeGitHub{files: []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ test"}}}
+	llm := &fakeLLM{result: ReviewResult{Summary: "整体风险较低。"}}
+	svc := NewServiceWithOptions(gh, llm, &fakeReporter{}, nil, ServiceOptions{Language: LanguageSimplifiedChinese})
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if !strings.Contains(llm.prompt, "Simplified Chinese") {
+		t.Fatalf("prompt did not include Chinese language instruction:\n%s", llm.prompt)
+	}
+}
+
 func TestServiceLogsSafeContextSummary(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
@@ -62,7 +75,7 @@ func TestServiceLogsSafeContextSummary(t *testing.T) {
 		t.Fatalf("Process() error = %v", err)
 	}
 	logLine := buf.String()
-	for _, want := range []string{"review context built", "patches=1", "full_files=1", "repo_docs=1"} {
+	for _, want := range []string{"review context built", "patches=1", "full_files=1", "related_sources=0", "repo_docs=0"} {
 		if !strings.Contains(logLine, want) {
 			t.Fatalf("log line %q missing %q", logLine, want)
 		}

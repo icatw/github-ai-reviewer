@@ -84,8 +84,8 @@ Webhook settings:
 Payload URL: https://<your-public-host>/github/webhook
 Content type: application/json
 Secret: use the same value as GITHUB_WEBHOOK_SECRET
-Events: Pull request
-Supported actions: opened, synchronize, reopened
+Events: Pull request, Issue comment
+Supported actions: opened, synchronize, reopened, and `/ai-review` comments on pull requests
 ```
 
 ## Configuration
@@ -110,6 +110,22 @@ LLM_MODEL
 ```
 
 Prefer `GITHUB_APP_PRIVATE_KEY_PATH` in production with a mounted secret file. `GITHUB_APP_PRIVATE_KEY` is useful for local tests but increases shell-history and accidental logging risk.
+
+Optional review language:
+
+```text
+REVIEW_LANGUAGE=zh-CN
+```
+
+When unset, review prompts and PR comments default to English. Set `REVIEW_LANGUAGE=zh-CN` to ask the LLM for Simplified Chinese review content and render the bot's fixed PR comment labels in Chinese.
+
+Optional Check Run reporting:
+
+```text
+CHECK_RUN_ENABLED=false
+```
+
+Check Runs are enabled by default. If the GitHub App installation lacks `Checks: write`, the service degrades to PR summary comments without failing the review job; set `CHECK_RUN_ENABLED=false` to disable Check Run attempts entirely.
 
 Do not commit local environment files, private keys, installation tokens, API keys, local databases, generated binaries, raw webhook payloads, raw prompts, raw model responses, or filled private E2E evidence.
 
@@ -138,6 +154,17 @@ scripts/check_publication_safety.sh
 ```
 
 `smoke_local.sh` builds the service, starts it with dummy non-secret configuration, checks `/healthz`, and stops it. It does not call GitHub, call an LLM, clone a repository, publish comments, or create Check Runs.
+
+## Review Context Benchmark
+
+Use the offline review benchmark to measure repository-context retrieval before changing prompts or calling a model:
+
+```bash
+go run ./cmd/review-bench -fixture testdata/review-bench/cross-package-auth.json
+go run ./cmd/review-bench -fixture testdata/review-bench/python-fastapi-user.json
+```
+
+A fixture contains changed PR files, an in-memory repository file map, and `golden_relevant_files`. The command runs the same `BuildRepoContext` path used by production and reports retrieved files, omissions, byte budget use, precision, recall, and F1. This keeps global-context review work measurable without GitHub credentials or LLM calls.
 
 ## Production Deployment
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -12,7 +13,15 @@ type JobSink interface {
 	Submit(job review.Job) error
 }
 
+type PullRequestResolver interface {
+	ResolvePullRequestHeadSHA(ctx context.Context, installationID int64, owner, repo string, pullNumber int) (string, error)
+}
+
 func New(webhookSecret string, sink JobSink) http.Handler {
+	return NewWithResolver(webhookSecret, sink, nil)
+}
+
+func NewWithResolver(webhookSecret string, sink JobSink, resolver PullRequestResolver) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -37,7 +46,28 @@ func New(webhookSecret string, sink JobSink) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if err := sink.Submit(*result.Job); err != nil {
+		job := result.Job
+		if result.Command != nil {
+			if resolver == nil {
+				http.Error(w, "pull request resolver unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			headSHA, err := resolver.ResolvePullRequestHeadSHA(r.Context(), result.Command.InstallationID, result.Command.Owner, result.Command.Repo, result.Command.PullNumber)
+			if err != nil || headSHA == "" {
+				http.Error(w, "pull request metadata unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			job = &review.Job{
+				InstallationID: result.Command.InstallationID,
+				Owner:          result.Command.Owner,
+				Repo:           result.Command.Repo,
+				PullNumber:     result.Command.PullNumber,
+				HeadSHA:        headSHA,
+				Action:         result.Command.Action,
+				DeliveryID:     result.Command.DeliveryID,
+			}
+		}
+		if err := sink.Submit(*job); err != nil {
 			http.Error(w, "job submission failed", http.StatusServiceUnavailable)
 			return
 		}

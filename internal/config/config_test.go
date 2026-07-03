@@ -21,8 +21,65 @@ func TestLoadFromEnvSucceeds(t *testing.T) {
 	if cfg.HTTPAddr != ":9090" || cfg.GitHub.AppID != 123 || cfg.LLM.Model != "review-model" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
+	if cfg.LLM.Language != "en" {
+		t.Fatalf("LLM.Language = %q, want default en", cfg.LLM.Language)
+	}
 	if cfg.GoWorkspace.Enabled {
 		t.Fatalf("GoWorkspace.Enabled = true, want default disabled")
+	}
+	if !cfg.CheckRun.Enabled {
+		t.Fatalf("CheckRun.Enabled = false, want default enabled")
+	}
+}
+
+func TestLoadFromEnvCanDisableCheckRunReporter(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
+	t.Setenv("GITHUB_APP_ID", "123")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "key")
+	t.Setenv("LLM_BASE_URL", "https://llm.example/v1")
+	t.Setenv("LLM_API_KEY", "api-key")
+	t.Setenv("LLM_MODEL", "review-model")
+	t.Setenv("CHECK_RUN_ENABLED", "false")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.CheckRun.Enabled {
+		t.Fatalf("CheckRun.Enabled = true, want disabled")
+	}
+}
+
+func TestLoadFromEnvReadsReviewLanguage(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
+	t.Setenv("GITHUB_APP_ID", "123")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "key")
+	t.Setenv("LLM_BASE_URL", "https://llm.example/v1")
+	t.Setenv("LLM_API_KEY", "api-key")
+	t.Setenv("LLM_MODEL", "review-model")
+	t.Setenv("REVIEW_LANGUAGE", "zh-CN")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.LLM.Language != "zh-CN" {
+		t.Fatalf("LLM.Language = %q, want zh-CN", cfg.LLM.Language)
+	}
+}
+
+func TestLoadFromEnvRejectsUnsupportedReviewLanguage(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
+	t.Setenv("GITHUB_APP_ID", "123")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "key")
+	t.Setenv("LLM_BASE_URL", "https://llm.example/v1")
+	t.Setenv("LLM_API_KEY", "api-key")
+	t.Setenv("LLM_MODEL", "review-model")
+	t.Setenv("REVIEW_LANGUAGE", "klingon")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "REVIEW_LANGUAGE") {
+		t.Fatalf("LoadFromEnv() error = %v, want REVIEW_LANGUAGE validation", err)
 	}
 }
 

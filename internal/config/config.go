@@ -15,6 +15,7 @@ type Config struct {
 	GitHub      GitHubConfig
 	LLM         LLMConfig
 	GoWorkspace GoWorkspaceConfig
+	CheckRun    CheckRunConfig
 }
 
 type GitHubConfig struct {
@@ -25,9 +26,10 @@ type GitHubConfig struct {
 }
 
 type LLMConfig struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	BaseURL  string
+	APIKey   string
+	Model    string
+	Language string
 }
 
 type GoWorkspaceConfig struct {
@@ -35,6 +37,10 @@ type GoWorkspaceConfig struct {
 	Root             string
 	CheckoutTimeout  time.Duration
 	OutputLimitBytes int
+}
+
+type CheckRunConfig struct {
+	Enabled bool
 }
 
 func LoadFromEnv() (Config, error) {
@@ -46,15 +52,19 @@ func LoadFromEnv() (Config, error) {
 			PrivateKeyPath: os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH"),
 		},
 		LLM: LLMConfig{
-			BaseURL: os.Getenv("LLM_BASE_URL"),
-			APIKey:  os.Getenv("LLM_API_KEY"),
-			Model:   os.Getenv("LLM_MODEL"),
+			BaseURL:  os.Getenv("LLM_BASE_URL"),
+			APIKey:   os.Getenv("LLM_API_KEY"),
+			Model:    os.Getenv("LLM_MODEL"),
+			Language: envOrDefault("REVIEW_LANGUAGE", "en"),
 		},
 		GoWorkspace: GoWorkspaceConfig{
 			Enabled:          parseBoolEnv("GO_WORKSPACE_PROVIDER_ENABLED"),
 			Root:             os.Getenv("GO_WORKSPACE_ROOT"),
 			CheckoutTimeout:  30 * time.Second,
 			OutputLimitBytes: 16 * 1024,
+		},
+		CheckRun: CheckRunConfig{
+			Enabled: parseBoolEnvDefault("CHECK_RUN_ENABLED", true),
 		},
 	}
 	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {
@@ -101,6 +111,9 @@ func (c Config) Validate() error {
 	if c.LLM.Model == "" {
 		missing = append(missing, "LLM_MODEL")
 	}
+	if !isSupportedReviewLanguage(c.LLM.Language) {
+		return errors.New("invalid REVIEW_LANGUAGE: supported values are en, zh-CN")
+	}
 	if c.GoWorkspace.Enabled {
 		if strings.TrimSpace(c.GoWorkspace.Root) == "" {
 			missing = append(missing, "GO_WORKSPACE_ROOT")
@@ -141,4 +154,22 @@ func envOrDefault(key, def string) string {
 func parseBoolEnv(key string) bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
 	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func parseBoolEnvDefault(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	v = strings.ToLower(v)
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func isSupportedReviewLanguage(language string) bool {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "", "en", "en-us", "zh-cn", "zh_hans", "zh-hans", "chinese", "中文":
+		return true
+	default:
+		return false
+	}
 }

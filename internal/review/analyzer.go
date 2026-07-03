@@ -242,6 +242,9 @@ func repoContextPaths(ctx RepoContext) []string {
 	for _, item := range ctx.FullFiles {
 		paths = append(paths, item.Path)
 	}
+	for _, item := range ctx.RelatedSources {
+		paths = append(paths, item.Path)
+	}
 	for _, item := range ctx.RelatedTests {
 		paths = append(paths, item.Path)
 	}

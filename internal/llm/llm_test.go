@@ -65,6 +65,29 @@ func TestClientReviewSendsOpenAICompatibleRequestAndParsesStructuredResult(t *te
 	}
 }
 
+func TestClientReviewChineseOptionAddsLanguageInstruction(t *testing.T) {
+	var gotSystem string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		gotSystem = req.Messages[0].Content
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"整体风险较低。\"}"}}]}`))
+	}))
+	defer srv.Close()
+
+	client := NewClientWithOptions(srv.URL, "key", "model-a", srv.Client(), ClientOptions{Language: review.LanguageSimplifiedChinese})
+	got, err := client.Review(context.Background(), "prompt")
+	if err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if got.Summary != "整体风险较低。" || !strings.Contains(gotSystem, "Simplified Chinese") {
+		t.Fatalf("result=%+v system prompt=%q", got, gotSystem)
+	}
+}
+
 func TestClientReviewRejectsMalformedOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

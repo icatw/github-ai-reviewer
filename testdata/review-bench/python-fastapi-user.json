@@ -1,0 +1,42 @@
+{
+  "name": "python-fastapi-user-change",
+  "job": {
+    "Owner": "octo",
+    "Repo": "repo",
+    "PullNumber": 10,
+    "HeadSHA": "abc",
+    "Action": "opened"
+  },
+  "files": [
+    {
+      "Filename": "app/api/user.py",
+      "Status": "modified",
+      "Additions": 4,
+      "Deletions": 1,
+      "Patch": "@@ -12,6 +12,8 @@ def create_user_route(payload):\n+    # changed validation path\n"
+    }
+  ],
+  "repo_files": {
+    "app/api/user.py": "from app.services.user import create_user\nfrom .schemas import UserRequest\n\ndef create_user_route(payload: UserRequest):\n    return create_user(payload)\n",
+    "app/api/schemas.py": "class UserRequest:\n    email: str\n",
+    "app/api/test_user.py": "def test_create_user_route():\n    assert True\n",
+    "app/services/user.py": "def create_user(payload):\n    return payload\n",
+    "app/services/audit.py": "def audit_user_change():\n    pass\n",
+    "tests/test_user.py": "def test_user_flow():\n    assert True\n",
+    "README.md": "# Python API\n"
+  },
+  "golden_relevant_files": [
+    "app/api/user.py",
+    "app/api/schemas.py",
+    "app/api/test_user.py",
+    "app/services/user.py",
+    "tests/test_user.py"
+  ],
+  "expected_findings": [
+    {
+      "file": "app/api/user.py",
+      "title": "user route validation must remain aligned with service behavior",
+      "evidence": "app/api/schemas.py defines UserRequest and app/services/user.py consumes the payload"
+    }
+  ]
+}

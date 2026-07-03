@@ -13,21 +13,35 @@ import (
 )
 
 type Client struct {
-	baseURL string
-	apiKey  string
-	model   string
-	http    *http.Client
+	baseURL  string
+	apiKey   string
+	model    string
+	language review.Language
+	http     *http.Client
+}
+
+type ClientOptions struct {
+	Language review.Language
 }
 
 func NewClient(baseURL, apiKey, model string, httpClient *http.Client) *Client {
+	return NewClientWithOptions(baseURL, apiKey, model, httpClient, ClientOptions{})
+}
+
+func NewClientWithOptions(baseURL, apiKey, model string, httpClient *http.Client, opts ClientOptions) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 60 * time.Second}
 	}
+	language := opts.Language
+	if language == "" {
+		language = review.LanguageEnglish
+	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		http:    httpClient,
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		apiKey:   apiKey,
+		model:    model,
+		language: language,
+		http:     httpClient,
 	}
 }
 
@@ -39,7 +53,7 @@ func (c *Client) Review(ctx context.Context, prompt string) (review.ReviewResult
 	reqBody := chatRequest{
 		Model: c.model,
 		Messages: []chatMessage{
-			{Role: "system", Content: "You are a conservative code reviewer. Return one JSON object only, with advisory and non-blocking findings based only on provided diff context."},
+			{Role: "system", Content: systemPrompt(c.language)},
 			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.2,
@@ -74,6 +88,14 @@ func (c *Client) Review(ctx context.Context, prompt string) (review.ReviewResult
 
 func errorsUnusableResponse() error {
 	return fmt.Errorf("llm response did not include choices")
+}
+
+func systemPrompt(language review.Language) string {
+	base := "You are a conservative code reviewer. Return one JSON object only, with advisory and non-blocking findings based only on provided diff context."
+	if language == review.LanguageSimplifiedChinese {
+		return base + " Write all human-readable JSON string values in Simplified Chinese. Keep JSON keys and enum values in English exactly as requested."
+	}
+	return base
 }
 
 type chatRequest struct {

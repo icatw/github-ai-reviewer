@@ -16,8 +16,9 @@ type reviewServiceDeps struct {
 }
 
 func buildReviewService(cfg config.Config, deps reviewServiceDeps) *review.Service {
+	opts := review.ServiceOptions{Language: review.NormalizeLanguage(cfg.LLM.Language)}
 	if !cfg.GoWorkspace.Enabled {
-		return review.NewServiceWithWorkspaceProvider(deps.github, deps.llm, deps.reporter, deps.logger, nil)
+		return review.NewServiceWithWorkspaceProviderAndOptions(deps.github, deps.llm, deps.reporter, deps.logger, nil, opts)
 	}
 	provider := review.NewLocalGoWorkspaceProvider(review.LocalGoWorkspaceProviderOptions{
 		Enabled:            true,
@@ -26,5 +27,5 @@ func buildReviewService(cfg config.Config, deps reviewServiceDeps) *review.Servi
 		OutputLimitBytes:   cfg.GoWorkspace.OutputLimitBytes,
 		CredentialProvider: review.NewInstallationCheckoutCredentialProvider(deps.installationTokens),
 	})
-	return review.NewServiceWithWorkspaceProvider(deps.github, deps.llm, deps.reporter, deps.logger, provider)
+	return review.NewServiceWithWorkspaceProviderAndOptions(deps.github, deps.llm, deps.reporter, deps.logger, provider, opts)
 }
