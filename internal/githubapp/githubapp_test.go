@@ -355,6 +355,63 @@ func TestClientCreatesListsAndUpdatesPullRequestReviewComments(t *testing.T) {
 	}
 }
 
+func TestClientCreatesPullRequestReviewWithInlineComments(t *testing.T) {
+	for _, status := range []int{http.StatusCreated, http.StatusOK} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			key := testPrivateKey(t)
+			var sawCreateReview bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+					_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+				case r.Method == http.MethodPost && r.URL.Path == "/repos/octo/repo/pulls/7/reviews":
+					sawCreateReview = r.Header.Get("Authorization") == "Bearer installation-token"
+					var req map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Fatal(err)
+					}
+					if req["commit_id"] != "abc123" || req["event"] != "COMMENT" || req["body"] != "AI review found 2 inline comments." {
+						t.Fatalf("review request = %+v", req)
+					}
+					comments, ok := req["comments"].([]any)
+					if !ok || len(comments) != 2 {
+						t.Fatalf("comments = %+v", req["comments"])
+					}
+					first := comments[0].(map[string]any)
+					if first["path"] != "main.go" || first["body"] != "inline body" || first["side"] != "RIGHT" || first["line"].(float64) != 12 {
+						t.Fatalf("first comment = %+v", first)
+					}
+					w.WriteHeader(status)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 71})
+				default:
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			client, err := NewClient(123, key, srv.URL, srv.Client())
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			reviewResp, err := client.CreatePullRequestReview(context.Background(), 42, "octo", "repo", 7, comment.PullRequestReviewRequest{
+				CommitID: "abc123",
+				Body:     "AI review found 2 inline comments.",
+				Event:    "COMMENT",
+				Comments: []comment.ReviewCommentRequest{
+					{Path: "main.go", Line: 12, Side: "RIGHT", Body: "inline body"},
+					{Path: "other.go", Line: 20, Side: "RIGHT", Body: "other body"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreatePullRequestReview() error = %v", err)
+			}
+			if reviewResp.ID != 71 || !sawCreateReview {
+				t.Fatalf("reviewResp=%+v sawCreateReview=%v", reviewResp, sawCreateReview)
+			}
+		})
+	}
+}
+
 func TestClientCreatesListsAndUpdatesCheckRuns(t *testing.T) {
 	key := testPrivateKey(t)
 	var sawList, sawCreate, sawUpdate bool

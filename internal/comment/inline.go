@@ -14,6 +14,7 @@ import (
 
 const (
 	InlineMarker        = "<!-- github-ai-reviewer:inline-comment:v1"
+	InlineStaleMarker   = "<!-- github-ai-reviewer:inline-comment:stale:v1 -->"
 	maxInlineComments   = 10
 	minInlineConfidence = 0.70
 )
@@ -28,10 +29,25 @@ type PullRequestReviewCommenter interface {
 	UpdatePullRequestReviewComment(ctx context.Context, installationID int64, owner, repo string, commentID int64, body string) error
 }
 
+type PullRequestReviewer interface {
+	CreatePullRequestReview(ctx context.Context, installationID int64, owner, repo string, pullNumber int, req PullRequestReviewRequest) (PullRequestReview, error)
+}
+
 type ReviewComment struct {
 	ID         int64
 	Body       string
 	AuthorType string
+}
+
+type PullRequestReview struct {
+	ID int64
+}
+
+type PullRequestReviewRequest struct {
+	CommitID string
+	Body     string
+	Event    string
+	Comments []ReviewCommentRequest
 }
 
 type ReviewCommentRequest struct {
@@ -45,6 +61,7 @@ type ReviewCommentRequest struct {
 type inlineClient interface {
 	PullRequestFileLister
 	PullRequestReviewCommenter
+	PullRequestReviewer
 }
 
 type InlineStats struct {
@@ -53,6 +70,7 @@ type InlineStats struct {
 	Mapped                   int
 	Created                  int
 	Updated                  int
+	Stale                    int
 	SkippedDisabled          int
 	SkippedUnsupportedClient int
 	SkippedQuality           int
@@ -86,6 +104,8 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 	existing := existingInlineComments(comments)
 	patches := patchLineIndex(files)
 	published := 0
+	current := map[string]struct{}{}
+	var creates []ReviewCommentRequest
 	for _, finding := range result.Findings {
 		if published >= maxInlineComments {
 			stats.SkippedLimit++
@@ -105,25 +125,51 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 		body := renderInlineFinding(finding, p.language)
 		fingerprint := inlineFingerprint(finding)
 		body = fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, body)
-		if commentID, ok := existing[fingerprint]; ok {
-			if err := client.UpdatePullRequestReviewComment(ctx, installationID, owner, repo, commentID, body); err != nil {
+		current[fingerprint] = struct{}{}
+		if existingComment, ok := existing[fingerprint]; ok {
+			if err := client.UpdatePullRequestReviewComment(ctx, installationID, owner, repo, existingComment.ID, body); err != nil {
 				return err
 			}
 			stats.Updated++
 			published++
 			continue
 		}
-		if err := client.CreatePullRequestReviewComment(ctx, installationID, owner, repo, number, ReviewCommentRequest{
+		creates = append(creates, ReviewCommentRequest{
 			CommitID: headSHA,
 			Path:     finding.File,
 			Line:     line,
 			Side:     "RIGHT",
 			Body:     body,
-		}); err != nil {
-			return err
-		}
+		})
 		stats.Created++
 		published++
+	}
+	if len(creates) > 0 {
+		if _, err := client.CreatePullRequestReview(ctx, installationID, owner, repo, number, PullRequestReviewRequest{
+			CommitID: headSHA,
+			Body:     renderPullRequestReviewBody(len(creates), p.language),
+			Event:    "COMMENT",
+			Comments: creates,
+		}); err != nil {
+			p.logInlineBatchFailure(owner, repo, number)
+			if err := p.fallbackCreateReviewComments(ctx, client, installationID, owner, repo, number, creates); err != nil {
+				return err
+			}
+		}
+	}
+	for fingerprint, existingComment := range existing {
+		if _, ok := current[fingerprint]; ok {
+			continue
+		}
+		if strings.Contains(existingComment.Body, InlineStaleMarker) {
+			continue
+		}
+		body := renderStaleInlineComment(existingComment.Body, fingerprint, headSHA)
+		if err := client.UpdatePullRequestReviewComment(ctx, installationID, owner, repo, existingComment.ID, body); err != nil {
+			p.logInlineStaleFailure(owner, repo, number)
+			continue
+		}
+		stats.Stale++
 	}
 	return nil
 }
@@ -132,7 +178,30 @@ func (p *Publisher) logInlineStats(owner, repo string, number int, stats InlineS
 	if p.logger == nil {
 		return
 	}
-	p.logger.Printf("inline comments completed repo=%s/%s pull=%d findings=%d eligible=%d mapped=%d created=%d updated=%d skipped_disabled=%d skipped_unsupported_client=%d skipped_quality=%d skipped_unmapped=%d skipped_limit=%d", owner, repo, number, stats.Findings, stats.Eligible, stats.Mapped, stats.Created, stats.Updated, stats.SkippedDisabled, stats.SkippedUnsupportedClient, stats.SkippedQuality, stats.SkippedUnmapped, stats.SkippedLimit)
+	p.logger.Printf("inline comments completed repo=%s/%s pull=%d findings=%d eligible=%d mapped=%d created=%d updated=%d stale=%d skipped_disabled=%d skipped_unsupported_client=%d skipped_quality=%d skipped_unmapped=%d skipped_limit=%d", owner, repo, number, stats.Findings, stats.Eligible, stats.Mapped, stats.Created, stats.Updated, stats.Stale, stats.SkippedDisabled, stats.SkippedUnsupportedClient, stats.SkippedQuality, stats.SkippedUnmapped, stats.SkippedLimit)
+}
+
+func (p *Publisher) logInlineBatchFailure(owner, repo string, number int) {
+	if p.logger == nil {
+		return
+	}
+	p.logger.Printf("inline batch create failed repo=%s/%s pull=%d category=github_error fallback=individual", owner, repo, number)
+}
+
+func (p *Publisher) logInlineStaleFailure(owner, repo string, number int) {
+	if p.logger == nil {
+		return
+	}
+	p.logger.Printf("inline stale mark failed repo=%s/%s pull=%d category=github_error", owner, repo, number)
+}
+
+func (p *Publisher) fallbackCreateReviewComments(ctx context.Context, client inlineClient, installationID int64, owner, repo string, number int, creates []ReviewCommentRequest) error {
+	for _, req := range creates {
+		if err := client.CreatePullRequestReviewComment(ctx, installationID, owner, repo, number, req); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func findingLine(finding review.Finding) (int, bool) {
@@ -173,6 +242,26 @@ func renderInlineFinding(finding review.Finding, language review.Language) strin
 	return strings.TrimSpace(b.String())
 }
 
+func renderPullRequestReviewBody(commentCount int, language review.Language) string {
+	if language == review.LanguageSimplifiedChinese {
+		return fmt.Sprintf("AI Review 发现 %d 条行级建议。所有发现均为建议，不会阻塞合并。", commentCount)
+	}
+	return fmt.Sprintf("AI Review found %d inline comment(s). Findings are advisory and non-blocking.", commentCount)
+}
+
+func renderStaleInlineComment(existingBody, fingerprint, headSHA string) string {
+	stale := InlineStaleMarker + "\n_Stale: this finding was not produced by the latest AI review run"
+	if strings.TrimSpace(headSHA) != "" {
+		stale += fmt.Sprintf(" for `%s`", headSHA)
+	}
+	stale += "._"
+	body := strings.TrimSpace(existingBody)
+	if body == "" {
+		return fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, stale)
+	}
+	return body + "\n\n" + stale
+}
+
 func inlineFingerprint(finding review.Finding) string {
 	line := 0
 	if finding.Line != nil {
@@ -183,15 +272,15 @@ func inlineFingerprint(finding review.Finding) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-func existingInlineComments(comments []ReviewComment) map[string]int64 {
-	out := map[string]int64{}
+func existingInlineComments(comments []ReviewComment) map[string]ReviewComment {
+	out := map[string]ReviewComment{}
 	for _, comment := range comments {
 		if comment.AuthorType != "Bot" || !strings.Contains(comment.Body, InlineMarker) {
 			continue
 		}
 		fingerprint := extractInlineFingerprint(comment.Body)
 		if fingerprint != "" {
-			out[fingerprint] = comment.ID
+			out[fingerprint] = comment
 		}
 	}
 	return out

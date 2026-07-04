@@ -40,6 +40,29 @@ func TestMultiReporterFanOutIsOrderedAndCapturesSafeFailures(t *testing.T) {
 	}
 }
 
+func TestMultiReporterStillRunsCheckRunReporterAfterInlineReporterFailure(t *testing.T) {
+	ctx := context.Background()
+	job := Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}
+	result := ReviewResult{Summary: "done"}
+	var order []string
+	checkRunReporter := &recordingReporter{name: "github_check_run", order: &order}
+	reporters := MultiReporter{
+		&recordingReporter{name: "pr_summary_comment", order: &order, completeErr: errors.New("inline batch failed")},
+		checkRunReporter,
+	}
+
+	err := reporters.ReviewCompleted(ctx, job, result)
+	if err == nil {
+		t.Fatal("ReviewCompleted() error = nil")
+	}
+	if !equalStrings(order, []string{"pr_summary_comment:completed", "github_check_run:completed"}) {
+		t.Fatalf("order = %v", order)
+	}
+	if !equalStrings(checkRunReporter.events, []string{"completed"}) {
+		t.Fatalf("check run events = %v", checkRunReporter.events)
+	}
+}
+
 func TestMultiReporterSendsAllLifecycleEvents(t *testing.T) {
 	ctx := context.Background()
 	job := Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7}

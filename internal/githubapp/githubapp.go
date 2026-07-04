@@ -287,6 +287,34 @@ func (c *Client) CreatePullRequestReviewComment(ctx context.Context, installatio
 	return c.doJSON(ctx, http.MethodPost, path, token, in, nil, http.StatusCreated)
 }
 
+func (c *Client) CreatePullRequestReview(ctx context.Context, installationID int64, owner, repo string, pullNumber int, req comment.PullRequestReviewRequest) (comment.PullRequestReview, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return comment.PullRequestReview{}, err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, pullNumber)
+	comments := make([]githubPullRequestReviewCommentRequest, 0, len(req.Comments))
+	for _, reviewComment := range req.Comments {
+		comments = append(comments, githubPullRequestReviewCommentRequest{
+			Path: reviewComment.Path,
+			Line: reviewComment.Line,
+			Side: reviewComment.Side,
+			Body: reviewComment.Body,
+		})
+	}
+	in := githubPullRequestReviewRequest{
+		CommitID: req.CommitID,
+		Body:     req.Body,
+		Event:    req.Event,
+		Comments: comments,
+	}
+	var out githubPullRequestReview
+	if err := c.doJSON(ctx, http.MethodPost, path, token, in, &out, http.StatusCreated, http.StatusOK); err != nil {
+		return comment.PullRequestReview{}, err
+	}
+	return comment.PullRequestReview{ID: out.ID}, nil
+}
+
 func (c *Client) UpdatePullRequestReviewComment(ctx context.Context, installationID int64, owner, repo string, commentID int64, body string) error {
 	token, err := c.installationToken(ctx, installationID)
 	if err != nil {
@@ -477,6 +505,24 @@ type githubReviewCommentRequest struct {
 	Path     string `json:"path"`
 	Line     int    `json:"line"`
 	Side     string `json:"side"`
+}
+
+type githubPullRequestReview struct {
+	ID int64 `json:"id"`
+}
+
+type githubPullRequestReviewRequest struct {
+	CommitID string                                  `json:"commit_id"`
+	Body     string                                  `json:"body"`
+	Event    string                                  `json:"event"`
+	Comments []githubPullRequestReviewCommentRequest `json:"comments"`
+}
+
+type githubPullRequestReviewCommentRequest struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Side string `json:"side"`
+	Body string `json:"body"`
 }
 
 type githubUser struct {
