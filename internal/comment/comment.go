@@ -22,15 +22,21 @@ type IssueCommenter interface {
 	UpdateIssueComment(ctx context.Context, installationID int64, owner, repo string, commentID int64, body string) error
 }
 
+type Logger interface {
+	Printf(format string, args ...any)
+}
+
 type Publisher struct {
 	client        IssueCommenter
 	language      review.Language
 	inlineEnabled bool
+	logger        Logger
 }
 
 type PublisherOptions struct {
 	Language              review.Language
 	InlineCommentsEnabled bool
+	Logger                Logger
 }
 
 func NewPublisher(client IssueCommenter) *Publisher {
@@ -42,7 +48,7 @@ func NewPublisherWithOptions(client IssueCommenter, opts PublisherOptions) *Publ
 	if language == "" {
 		language = review.LanguageEnglish
 	}
-	return &Publisher{client: client, language: language, inlineEnabled: opts.InlineCommentsEnabled}
+	return &Publisher{client: client, language: language, inlineEnabled: opts.InlineCommentsEnabled, logger: opts.Logger}
 }
 
 func Render(result review.ReviewResult) (string, bool) {

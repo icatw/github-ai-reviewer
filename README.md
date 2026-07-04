@@ -175,7 +175,7 @@ go run ./cmd/review-bench-from-pr -env-file .env.production -owner OWNER -repo R
 
 The generator is read-only: it resolves the repository installation, fetches PR metadata and changed files, records only repository files that `BuildRepoContext` actually reads, and writes a local fixture. Do not commit fixtures generated from private repositories unless they have been reviewed and intentionally sanitized.
 
-Inline PR review comments are available behind `INLINE_COMMENTS_ENABLED=true`. The bot only creates inline comments for `blocker` or `warning` findings whose `file:line` maps to a RIGHT-side line in the PR diff and whose evidence fields pass the inline quality gate; unmapped, low-confidence, or lower-severity findings stay in the summary comment.
+Inline PR review comments are available behind `INLINE_COMMENTS_ENABLED=true`. The bot only creates inline comments for `blocker` or `warning` findings whose `file:line` maps to a RIGHT-side line in the PR diff and whose evidence fields pass the inline quality gate; unmapped, low-confidence, or lower-severity findings stay in the summary comment. Service logs include safe aggregate inline counters for each run so quality thresholds can be tuned without exposing source snippets.
 
 ## Production Deployment
 

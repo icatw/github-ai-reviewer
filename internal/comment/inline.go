@@ -47,12 +47,32 @@ type inlineClient interface {
 	PullRequestReviewCommenter
 }
 
+type InlineStats struct {
+	Findings                 int
+	Eligible                 int
+	Mapped                   int
+	Created                  int
+	Updated                  int
+	SkippedDisabled          int
+	SkippedUnsupportedClient int
+	SkippedQuality           int
+	SkippedUnmapped          int
+	SkippedLimit             int
+}
+
 func (p *Publisher) publishInlineComments(ctx context.Context, installationID int64, owner, repo string, number int, headSHA string, result review.ReviewResult) error {
-	if !p.inlineEnabled || headSHA == "" || len(result.Findings) == 0 {
+	stats := InlineStats{Findings: len(result.Findings)}
+	defer func() { p.logInlineStats(owner, repo, number, stats) }()
+	if !p.inlineEnabled {
+		stats.SkippedDisabled = len(result.Findings)
+		return nil
+	}
+	if headSHA == "" || len(result.Findings) == 0 {
 		return nil
 	}
 	client, ok := p.client.(inlineClient)
 	if !ok {
+		stats.SkippedUnsupportedClient = len(result.Findings)
 		return nil
 	}
 	files, err := client.FetchPullRequestFiles(ctx, installationID, owner, repo, number)
@@ -65,18 +85,23 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 	}
 	existing := existingInlineComments(comments)
 	patches := patchLineIndex(files)
-	created := 0
+	published := 0
 	for _, finding := range result.Findings {
-		if created >= maxInlineComments {
-			break
+		if published >= maxInlineComments {
+			stats.SkippedLimit++
+			continue
 		}
 		if !shouldPublishInlineFinding(finding) {
+			stats.SkippedQuality++
 			continue
 		}
+		stats.Eligible++
 		line, ok := findingLine(finding)
 		if !ok || !patches.contains(finding.File, line) {
+			stats.SkippedUnmapped++
 			continue
 		}
+		stats.Mapped++
 		body := renderInlineFinding(finding, p.language)
 		fingerprint := inlineFingerprint(finding)
 		body = fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, body)
@@ -84,7 +109,8 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 			if err := client.UpdatePullRequestReviewComment(ctx, installationID, owner, repo, commentID, body); err != nil {
 				return err
 			}
-			created++
+			stats.Updated++
+			published++
 			continue
 		}
 		if err := client.CreatePullRequestReviewComment(ctx, installationID, owner, repo, number, ReviewCommentRequest{
@@ -96,9 +122,17 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 		}); err != nil {
 			return err
 		}
-		created++
+		stats.Created++
+		published++
 	}
 	return nil
+}
+
+func (p *Publisher) logInlineStats(owner, repo string, number int, stats InlineStats) {
+	if p.logger == nil {
+		return
+	}
+	p.logger.Printf("inline comments completed repo=%s/%s pull=%d findings=%d eligible=%d mapped=%d created=%d updated=%d skipped_disabled=%d skipped_unsupported_client=%d skipped_quality=%d skipped_unmapped=%d skipped_limit=%d", owner, repo, number, stats.Findings, stats.Eligible, stats.Mapped, stats.Created, stats.Updated, stats.SkippedDisabled, stats.SkippedUnsupportedClient, stats.SkippedQuality, stats.SkippedUnmapped, stats.SkippedLimit)
 }
 
 func findingLine(finding review.Finding) (int, bool) {

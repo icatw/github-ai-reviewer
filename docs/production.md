@@ -68,7 +68,7 @@ Optional inline PR review comments:
 INLINE_COMMENTS_ENABLED=true
 ```
 
-Inline comments are disabled by default. When enabled, the bot still posts or updates the summary comment, then adds or updates up to 10 inline review comments for findings whose `file:line` can be mapped to a RIGHT-side line in the current PR diff. Inline publishing is intentionally stricter than summary publishing: only `blocker` and `warning` findings are eligible, required evidence fields must be present, and explicit confidence values below `0.70` stay summary-only. Findings that cannot be mapped or do not meet this quality bar remain only in the summary comment. This requires `Pull requests: read and write` on the GitHub App installation.
+Inline comments are disabled by default. When enabled, the bot still posts or updates the summary comment, then adds or updates up to 10 inline review comments for findings whose `file:line` can be mapped to a RIGHT-side line in the current PR diff. Inline publishing is intentionally stricter than summary publishing: only `blocker` and `warning` findings are eligible, required evidence fields must be present, and explicit confidence values below `0.70` stay summary-only. Findings that cannot be mapped or do not meet this quality bar remain only in the summary comment. Each run logs safe aggregate inline counters such as `findings`, `eligible`, `mapped`, `created`, `updated`, and skip counts; it does not log finding text or source snippets. This requires `Pull requests: read and write` on the GitHub App installation.
 
 ## Workspace Checkout
 

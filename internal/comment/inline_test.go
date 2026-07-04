@@ -2,6 +2,7 @@ package comment
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -173,6 +174,88 @@ func TestPublisherSkipsInlineCommentOutsideDiff(t *testing.T) {
 	}
 }
 
+func TestPublisherLogsInlineStats(t *testing.T) {
+	line20 := 20
+	line21 := 21
+	line99 := 99
+	lowConfidence := 0.69
+	updatedFinding := review.Finding{
+		Severity:        "warning",
+		File:            "main.go",
+		Line:            &line21,
+		Title:           "Updated finding",
+		Evidence:        "updatedCall()",
+		FailureScenario: "runtime failure",
+		Suggestion:      "guard it",
+	}
+	logger := &fakeLogger{}
+	fake := &fakeInlineCommenter{
+		files: []review.FileChange{{Filename: "main.go", Patch: "@@ -1 +20,4 @@\n+newCall()\n+updatedCall()\n+otherCall()\n"}},
+		reviewComments: []ReviewComment{{
+			ID:         55,
+			AuthorType: "Bot",
+			Body:       InlineMarker + " fingerprint=" + inlineFingerprint(updatedFinding) + " -->\nold",
+		}},
+	}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: true, Logger: logger})
+	err := pub.PublishForHead(context.Background(), 42, "octo", "repo", 7, "abc123", review.ReviewResult{
+		Summary: "summary",
+		Findings: []review.Finding{
+			{
+				Severity:        "warning",
+				File:            "main.go",
+				Line:            &line20,
+				Title:           "Created finding",
+				Evidence:        "newCall()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+			},
+			updatedFinding,
+			{
+				Severity:        "warning",
+				File:            "main.go",
+				Line:            &line20,
+				Title:           "Low confidence",
+				Evidence:        "newCall()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+				Confidence:      &lowConfidence,
+			},
+			{
+				Severity:        "warning",
+				File:            "main.go",
+				Line:            &line99,
+				Title:           "Unmapped finding",
+				Evidence:        "missingCall()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PublishForHead() error = %v", err)
+	}
+	if fake.createdReview.Body == "" || fake.updatedReviewID != 55 {
+		t.Fatalf("expected created and updated inline comments: created=%+v updatedID=%d", fake.createdReview, fake.updatedReviewID)
+	}
+	logLine := logger.String()
+	for _, want := range []string{
+		"inline comments completed repo=octo/repo pull=7",
+		"findings=4",
+		"eligible=3",
+		"mapped=2",
+		"created=1",
+		"updated=1",
+		"skipped_quality=1",
+		"skipped_unmapped=1",
+		"skipped_limit=0",
+	} {
+		if !strings.Contains(logLine, want) {
+			t.Fatalf("log line missing %q:\n%s", want, logLine)
+		}
+	}
+}
+
 func TestPublisherUpdatesExistingInlineComment(t *testing.T) {
 	line := 20
 	finding := review.Finding{
@@ -203,6 +286,18 @@ func TestPublisherUpdatesExistingInlineComment(t *testing.T) {
 	if fake.createdReview.Body != "" {
 		t.Fatalf("created duplicate inline review: %+v", fake.createdReview)
 	}
+}
+
+type fakeLogger struct {
+	lines []string
+}
+
+func (l *fakeLogger) Printf(format string, args ...any) {
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *fakeLogger) String() string {
+	return strings.Join(l.lines, "\n")
 }
 
 type fakeInlineCommenter struct {
