@@ -109,7 +109,7 @@ It checks repository installation discovery, installation token exchange, pull r
 
 ```bash
 cd /home/ubuntu/github-ai-reviewer
-git pull --ff-only origin m1-github-app-webhook
+git pull --ff-only origin main
 go test ./...
 go build -o server ./cmd/server
 sudo install -m 0644 deploy/systemd/github-ai-reviewer.service /etc/systemd/system/github-ai-reviewer.service
