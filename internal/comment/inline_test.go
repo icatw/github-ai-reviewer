@@ -62,6 +62,91 @@ func TestPublisherCreatesInlineCommentForDiffFinding(t *testing.T) {
 	}
 }
 
+func TestPublisherSkipsLowValueInlineFindings(t *testing.T) {
+	line := 20
+	lowConfidence := 0.69
+	tests := []struct {
+		name    string
+		finding review.Finding
+	}{
+		{
+			name: "question severity",
+			finding: review.Finding{
+				Severity:        "question",
+				File:            "main.go",
+				Line:            &line,
+				Title:           "Question",
+				Evidence:        "badCall()",
+				FailureScenario: "unclear failure",
+				Suggestion:      "check intent",
+			},
+		},
+		{
+			name: "low confidence",
+			finding: review.Finding{
+				Severity:        "warning",
+				File:            "main.go",
+				Line:            &line,
+				Title:           "Low confidence",
+				Evidence:        "badCall()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+				Confidence:      &lowConfidence,
+			},
+		},
+		{
+			name: "missing failure scenario",
+			finding: review.Finding{
+				Severity:   "warning",
+				File:       "main.go",
+				Line:       &line,
+				Title:      "Incomplete",
+				Evidence:   "badCall()",
+				Suggestion: "guard it",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeInlineCommenter{files: []review.FileChange{{Filename: "main.go", Patch: "@@ -1 +20,2 @@\n+badCall()\n"}}}
+			pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: true})
+			err := pub.PublishForHead(context.Background(), 42, "octo", "repo", 7, "abc123", review.ReviewResult{Summary: "summary", Findings: []review.Finding{tt.finding}})
+			if err != nil {
+				t.Fatalf("PublishForHead() error = %v", err)
+			}
+			if fake.createdBody == "" {
+				t.Fatal("summary issue comment was not created")
+			}
+			if fake.createdReview.Body != "" || fake.updatedReviewBody != "" {
+				t.Fatalf("unexpected inline output: created=%+v updated=%q", fake.createdReview, fake.updatedReviewBody)
+			}
+		})
+	}
+}
+
+func TestPublisherCreatesInlineCommentForHighConfidenceFinding(t *testing.T) {
+	line := 20
+	confidence := 0.70
+	fake := &fakeInlineCommenter{files: []review.FileChange{{Filename: "main.go", Patch: "@@ -1 +20,2 @@\n+badCall()\n"}}}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: true})
+	err := pub.PublishForHead(context.Background(), 42, "octo", "repo", 7, "abc123", review.ReviewResult{Summary: "summary", Findings: []review.Finding{{
+		Severity:        "blocker",
+		File:            "main.go",
+		Line:            &line,
+		Title:           "High confidence",
+		Evidence:        "badCall()",
+		FailureScenario: "runtime failure",
+		Suggestion:      "guard it",
+		Confidence:      &confidence,
+	}}})
+	if err != nil {
+		t.Fatalf("PublishForHead() error = %v", err)
+	}
+	if fake.createdReview.Body == "" {
+		t.Fatal("expected inline review comment")
+	}
+}
+
 func TestPublisherSkipsInlineCommentOutsideDiff(t *testing.T) {
 	line := 99
 	fake := &fakeInlineCommenter{

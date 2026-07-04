@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	InlineMarker      = "<!-- github-ai-reviewer:inline-comment:v1"
-	maxInlineComments = 10
+	InlineMarker        = "<!-- github-ai-reviewer:inline-comment:v1"
+	maxInlineComments   = 10
+	minInlineConfidence = 0.70
 )
 
 type PullRequestFileLister interface {
@@ -69,6 +70,9 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 		if created >= maxInlineComments {
 			break
 		}
+		if !shouldPublishInlineFinding(finding) {
+			continue
+		}
 		line, ok := findingLine(finding)
 		if !ok || !patches.contains(finding.File, line) {
 			continue
@@ -102,6 +106,21 @@ func findingLine(finding review.Finding) (int, bool) {
 		return 0, false
 	}
 	return *finding.Line, true
+}
+
+func shouldPublishInlineFinding(finding review.Finding) bool {
+	switch strings.ToLower(strings.TrimSpace(finding.Severity)) {
+	case "blocker", "warning":
+	default:
+		return false
+	}
+	if strings.TrimSpace(finding.Title) == "" || strings.TrimSpace(finding.Evidence) == "" || strings.TrimSpace(finding.FailureScenario) == "" || strings.TrimSpace(finding.Suggestion) == "" {
+		return false
+	}
+	if finding.Confidence != nil && *finding.Confidence < minInlineConfidence {
+		return false
+	}
+	return true
 }
 
 func renderInlineFinding(finding review.Finding, language review.Language) string {
