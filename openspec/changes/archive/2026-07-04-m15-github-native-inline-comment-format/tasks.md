@@ -42,4 +42,4 @@
 - [x] 6.2 Run `go test ./...`.
 - [x] 6.3 Run `go build ./cmd/server`.
 - [x] 6.4 Run `openspec validate m15-github-native-inline-comment-format --type change --strict`.
-- [ ] 6.5 If deployed for manual verification, confirm the GitHub PR UI shows compact line-local inline comments and the summary comment remains the full report.
+- [x] 6.5 If deployed for manual verification, confirm the GitHub PR UI shows compact line-local inline comments and the summary comment remains the full report.
