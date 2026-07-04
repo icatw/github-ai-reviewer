@@ -152,6 +152,110 @@ func TestPublisherCreatesInlineCommentForHighConfidenceFinding(t *testing.T) {
 	}
 }
 
+func TestPublisherAppliesJobInlinePolicy(t *testing.T) {
+	line20 := 20
+	line21 := 21
+	line22 := 22
+	confidenceLow := 0.80
+	confidenceHigh := 0.95
+	fake := &fakeInlineCommenter{
+		files: []review.FileChange{{
+			Filename: "main.go",
+			Patch:    "@@ -1 +20,4 @@\n+first()\n+second()\n+third()\n",
+		}},
+	}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: true})
+	effective := review.MergeEffectiveReviewConfig(review.DefaultGlobalReviewConfig(review.LanguageEnglish), nil)
+	effective.InlineMaxComments = 1
+	effective.InlineSeverityThreshold = review.SeverityWarning
+	effective.InlineConfidenceThreshold = 0.90
+	job := review.Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc123", EffectiveConfig: &effective}
+
+	err := pub.PublishForJob(context.Background(), job, review.ReviewResult{
+		Summary: "summary",
+		Findings: []review.Finding{
+			{
+				Severity:        "suggestion",
+				File:            "main.go",
+				Line:            &line20,
+				Title:           "Suggestion skipped",
+				Evidence:        "first()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+				Confidence:      &confidenceHigh,
+			},
+			{
+				Severity:        "warning",
+				File:            "main.go",
+				Line:            &line21,
+				Title:           "Low confidence skipped",
+				Evidence:        "second()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+				Confidence:      &confidenceLow,
+			},
+			{
+				Severity:        "warning",
+				File:            "main.go",
+				Line:            &line22,
+				Title:           "High confidence kept",
+				Evidence:        "third()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+				Confidence:      &confidenceHigh,
+			},
+			{
+				Severity:        "blocker",
+				File:            "main.go",
+				Line:            &line20,
+				Title:           "Limited out",
+				Evidence:        "first()",
+				FailureScenario: "runtime failure",
+				Suggestion:      "guard it",
+				Confidence:      &confidenceHigh,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PublishForJob() error = %v", err)
+	}
+	if len(fake.createdPullRequestReview.Comments) != 1 {
+		t.Fatalf("comments = %+v", fake.createdPullRequestReview.Comments)
+	}
+	if !strings.Contains(fake.createdPullRequestReview.Comments[0].Body, "High confidence kept") {
+		t.Fatalf("created body = %q", fake.createdPullRequestReview.Comments[0].Body)
+	}
+}
+
+func TestPublisherAppliesJobPathIgnoreToInlineEligibility(t *testing.T) {
+	line := 20
+	fake := &fakeInlineCommenter{
+		files: []review.FileChange{
+			{Filename: "main.go", Patch: "@@ -1 +20,2 @@\n+main()\n"},
+			{Filename: "docs/secret.md", Patch: "@@ -1 +20,2 @@\n+secret\n"},
+		},
+	}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: true})
+	effective := review.MergeEffectiveReviewConfig(review.DefaultGlobalReviewConfig(review.LanguageEnglish), nil)
+	cfg, err := review.ParseRepositoryConfig([]byte("path_ignore:\n  - docs/**\n"))
+	if err != nil {
+		t.Fatalf("ParseRepositoryConfig() error = %v", err)
+	}
+	effective.PathIgnore = cfg.PathIgnore
+	job := review.Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc123", EffectiveConfig: &effective}
+
+	err = pub.PublishForJob(context.Background(), job, review.ReviewResult{
+		Summary:  "summary",
+		Findings: []review.Finding{eligibleFinding("docs/secret.md", line, "Ignored", "secret")},
+	})
+	if err != nil {
+		t.Fatalf("PublishForJob() error = %v", err)
+	}
+	if len(fake.createdPullRequestReview.Comments) != 0 {
+		t.Fatalf("ignored path produced inline comments: %+v", fake.createdPullRequestReview.Comments)
+	}
+}
+
 func TestPublisherSkipsInlineCommentOutsideDiff(t *testing.T) {
 	line := 99
 	fake := &fakeInlineCommenter{

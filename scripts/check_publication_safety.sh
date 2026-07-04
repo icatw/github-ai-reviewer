@@ -32,6 +32,9 @@ require_file scripts/check_e2e_safety.sh
 
 require_text README.md "## GitHub App Setup"
 require_text README.md "## Configuration"
+require_text README.md "### Repository Review Config"
+require_text README.md ".github/ai-review.yml"
+require_text README.md "Repository config cannot enable globally disabled Check Runs"
 require_text README.md "## Workspace Checkout"
 require_text README.md "GO_WORKSPACE_PROVIDER_ENABLED=false"
 require_text README.md "## Local Development"

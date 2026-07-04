@@ -106,29 +106,48 @@ func (p *Publisher) Publish(ctx context.Context, installationID int64, owner, re
 }
 
 func (p *Publisher) PublishForHead(ctx context.Context, installationID int64, owner, repo string, number int, headSHA string, result review.ReviewResult) error {
-	body, ok := RenderWithLanguage(result, p.language)
-	if !ok {
-		return nil
+	return p.publish(ctx, installationID, owner, repo, number, headSHA, nil, result)
+}
+
+func (p *Publisher) PublishForJob(ctx context.Context, job review.Job, result review.ReviewResult) error {
+	return p.publish(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber, job.HeadSHA, job.EffectiveConfig, result)
+}
+
+func (p *Publisher) publish(ctx context.Context, installationID int64, owner, repo string, number int, headSHA string, effective *review.EffectiveReviewConfig, result review.ReviewResult) error {
+	language := p.language
+	summaryEnabled := true
+	if effective != nil {
+		language = effective.Language
+		summaryEnabled = effective.SummaryCommentEnabled
 	}
-	if strings.TrimSpace(body) == "" {
-		return nil
+	if language == "" {
+		language = review.LanguageEnglish
 	}
-	comments, err := p.client.ListIssueComments(ctx, installationID, owner, repo, number)
-	if err != nil {
-		return err
-	}
-	for _, issueComment := range comments {
-		if strings.Contains(issueComment.Body, Marker) && issueComment.AuthorType == "Bot" {
-			if err := p.client.UpdateIssueComment(ctx, installationID, owner, repo, issueComment.ID, body); err != nil {
-				return err
+	if summaryEnabled {
+		body, ok := RenderWithLanguage(result, language)
+		if !ok {
+			return nil
+		}
+		if strings.TrimSpace(body) == "" {
+			return nil
+		}
+		comments, err := p.client.ListIssueComments(ctx, installationID, owner, repo, number)
+		if err != nil {
+			return err
+		}
+		for _, issueComment := range comments {
+			if strings.Contains(issueComment.Body, Marker) && issueComment.AuthorType == "Bot" {
+				if err := p.client.UpdateIssueComment(ctx, installationID, owner, repo, issueComment.ID, body); err != nil {
+					return err
+				}
+				return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, effective, result)
 			}
-			return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, result)
+		}
+		if err := p.client.CreateIssueComment(ctx, installationID, owner, repo, number, body); err != nil {
+			return err
 		}
 	}
-	if err := p.client.CreateIssueComment(ctx, installationID, owner, repo, number, body); err != nil {
-		return err
-	}
-	return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, result)
+	return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, effective, result)
 }
 
 func (p *Publisher) Cleanup(ctx context.Context, job review.CleanupJob) error {

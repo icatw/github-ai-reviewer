@@ -19,6 +19,15 @@ const (
 	minInlineConfidence = 0.70
 )
 
+type inlinePolicy struct {
+	enabled             bool
+	maxComments         int
+	severityThreshold   review.SeverityThreshold
+	confidenceThreshold float64
+	pathIgnore          review.PathIgnorePatterns
+	language            review.Language
+}
+
 type PullRequestFileLister interface {
 	FetchPullRequestFiles(ctx context.Context, installationID int64, owner, repo string, pullNumber int) ([]review.FileChange, error)
 }
@@ -78,10 +87,11 @@ type InlineStats struct {
 	SkippedLimit             int
 }
 
-func (p *Publisher) publishInlineComments(ctx context.Context, installationID int64, owner, repo string, number int, headSHA string, result review.ReviewResult) error {
+func (p *Publisher) publishInlineComments(ctx context.Context, installationID int64, owner, repo string, number int, headSHA string, effective *review.EffectiveReviewConfig, result review.ReviewResult) error {
+	policy := p.inlinePolicy(effective)
 	stats := InlineStats{Findings: len(result.Findings)}
 	defer func() { p.logInlineStats(owner, repo, number, stats) }()
-	if !p.inlineEnabled {
+	if !policy.enabled {
 		stats.SkippedDisabled = len(result.Findings)
 		return nil
 	}
@@ -97,6 +107,7 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 	if err != nil {
 		return err
 	}
+	files, ignoredFiles := filterInlineIgnoredFiles(files, policy.pathIgnore)
 	comments, err := client.ListPullRequestReviewComments(ctx, installationID, owner, repo, number)
 	if err != nil {
 		return err
@@ -107,11 +118,15 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 	current := map[string]struct{}{}
 	var creates []ReviewCommentRequest
 	for _, finding := range result.Findings {
-		if published >= maxInlineComments {
+		if policy.pathIgnore.Matches(finding.File) {
+			stats.SkippedQuality++
+			continue
+		}
+		if published >= policy.maxComments {
 			stats.SkippedLimit++
 			continue
 		}
-		if !shouldPublishInlineFinding(finding) {
+		if !shouldPublishInlineFindingWithPolicy(finding, policy) {
 			stats.SkippedQuality++
 			continue
 		}
@@ -122,7 +137,7 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 			continue
 		}
 		stats.Mapped++
-		body := renderInlineFinding(finding, p.language)
+		body := renderInlineFinding(finding, policy.language)
 		fingerprint := inlineFingerprint(finding)
 		body = fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, body)
 		current[fingerprint] = struct{}{}
@@ -147,7 +162,7 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 	if len(creates) > 0 {
 		if _, err := client.CreatePullRequestReview(ctx, installationID, owner, repo, number, PullRequestReviewRequest{
 			CommitID: headSHA,
-			Body:     renderPullRequestReviewBody(len(creates), p.language),
+			Body:     renderPullRequestReviewBody(len(creates), policy.language),
 			Event:    "COMMENT",
 			Comments: creates,
 		}); err != nil {
@@ -171,7 +186,59 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 		}
 		stats.Stale++
 	}
+	stats.SkippedQuality += ignoredFiles
 	return nil
+}
+
+func (p *Publisher) inlinePolicy(effective *review.EffectiveReviewConfig) inlinePolicy {
+	policy := inlinePolicy{
+		enabled:             p.inlineEnabled,
+		maxComments:         maxInlineComments,
+		severityThreshold:   review.SeverityWarning,
+		confidenceThreshold: minInlineConfidence,
+		language:            p.language,
+	}
+	if policy.language == "" {
+		policy.language = review.LanguageEnglish
+	}
+	if effective == nil {
+		return policy
+	}
+	policy.enabled = policy.enabled && effective.InlineCommentsEnabled
+	policy.maxComments = effective.InlineMaxComments
+	if policy.maxComments < 0 {
+		policy.maxComments = 0
+	}
+	if policy.maxComments > maxInlineComments {
+		policy.maxComments = maxInlineComments
+	}
+	if effective.InlineSeverityThreshold != "" {
+		policy.severityThreshold = effective.InlineSeverityThreshold
+	}
+	if effective.InlineConfidenceThreshold >= 0 && effective.InlineConfidenceThreshold <= 1 {
+		policy.confidenceThreshold = effective.InlineConfidenceThreshold
+	}
+	if effective.Language != "" {
+		policy.language = effective.Language
+	}
+	policy.pathIgnore = effective.PathIgnore
+	return policy
+}
+
+func filterInlineIgnoredFiles(files []review.FileChange, patterns review.PathIgnorePatterns) ([]review.FileChange, int) {
+	if len(patterns) == 0 {
+		return files, 0
+	}
+	out := make([]review.FileChange, 0, len(files))
+	ignored := 0
+	for _, file := range files {
+		if patterns.Matches(file.Filename) {
+			ignored++
+			continue
+		}
+		out = append(out, file)
+	}
+	return out, ignored
 }
 
 func (p *Publisher) cleanupInlineComments(ctx context.Context, job review.CleanupJob) error {
@@ -244,18 +311,45 @@ func findingLine(finding review.Finding) (int, bool) {
 }
 
 func shouldPublishInlineFinding(finding review.Finding) bool {
+	return shouldPublishInlineFindingWithPolicy(finding, inlinePolicy{
+		enabled:             true,
+		maxComments:         maxInlineComments,
+		severityThreshold:   review.SeverityWarning,
+		confidenceThreshold: minInlineConfidence,
+	})
+}
+
+func shouldPublishInlineFindingWithPolicy(finding review.Finding, policy inlinePolicy) bool {
 	switch strings.ToLower(strings.TrimSpace(finding.Severity)) {
 	case "blocker", "warning":
 	default:
 		return false
 	}
+	if inlineSeverityRank(review.SeverityThreshold(strings.ToLower(strings.TrimSpace(finding.Severity)))) > inlineSeverityRank(policy.severityThreshold) {
+		return false
+	}
 	if strings.TrimSpace(finding.Title) == "" || strings.TrimSpace(finding.Evidence) == "" || strings.TrimSpace(finding.FailureScenario) == "" || strings.TrimSpace(finding.Suggestion) == "" {
 		return false
 	}
-	if finding.Confidence != nil && *finding.Confidence < minInlineConfidence {
+	if finding.Confidence != nil && *finding.Confidence < policy.confidenceThreshold {
 		return false
 	}
 	return true
+}
+
+func inlineSeverityRank(severity review.SeverityThreshold) int {
+	switch severity {
+	case review.SeverityBlocker:
+		return 0
+	case review.SeverityWarning:
+		return 1
+	case review.SeveritySuggestion:
+		return 2
+	case review.SeverityQuestion:
+		return 3
+	default:
+		return 1
+	}
 }
 
 func renderInlineFinding(finding review.Finding, language review.Language) string {

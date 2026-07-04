@@ -16,6 +16,8 @@ func NewReporter(publisher *Publisher) *Reporter {
 
 func (r *Reporter) Name() string { return "pr_summary_comment" }
 
+func (r *Reporter) SupportsInlineComments() bool { return true }
+
 func (r *Reporter) JobStarted(ctx context.Context, job review.Job) error {
 	return nil
 }
@@ -24,7 +26,7 @@ func (r *Reporter) ReviewCompleted(ctx context.Context, job review.Job, result r
 	if r.publisher == nil {
 		return nil
 	}
-	return r.publisher.PublishForHead(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber, job.HeadSHA, result)
+	return r.publisher.PublishForJob(ctx, job, result)
 }
 
 func (r *Reporter) OutputSuppressed(ctx context.Context, job review.Job, result review.ReviewResult) error {

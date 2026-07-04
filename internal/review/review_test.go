@@ -58,6 +58,115 @@ func TestServiceChineseLanguageAddsPromptInstruction(t *testing.T) {
 	}
 }
 
+func TestServiceRepositoryConfigDisablesReviewBeforeDownstreamWork(t *testing.T) {
+	gh := &fakeGitHub{contents: map[string]string{".github/ai-review.yml": "enabled: false\n"}}
+	llm := &fakeLLM{result: ReviewResult{Summary: "should not run"}}
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, nil)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if gh.filesFetched != 0 || llm.prompt != "" || reporter.started != 0 || reporter.completed != 0 || reporter.failed != 0 {
+		t.Fatalf("downstream work ran despite enabled:false: files=%d llm=%q reporter=%+v", gh.filesFetched, llm.prompt, reporter)
+	}
+}
+
+func TestServiceInvalidRepositoryConfigFallsBackToDefaultsWithSafeLimitation(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	gh := &fakeGitHub{
+		files:    []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+package main\n"}},
+		contents: map[string]string{".github/ai-review.yml": "language: secret-invalid-language\n"},
+	}
+	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
+	reporter := &fakeReporter{}
+	svc := NewService(gh, llm, reporter, logger)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc", DeliveryID: "d1"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if reporter.completed != 1 {
+		t.Fatalf("reporter = %+v", reporter)
+	}
+	if !contains(reporter.result.Limitations, RepoConfigInvalid) {
+		t.Fatalf("limitations = %v, want %s", reporter.result.Limitations, RepoConfigInvalid)
+	}
+	if strings.Contains(buf.String(), "secret-invalid-language") || strings.Contains(llm.prompt, "secret-invalid-language") {
+		t.Fatalf("raw invalid config leaked: log=%q prompt=%q", buf.String(), llm.prompt)
+	}
+}
+
+func TestServiceRepositoryConfigFiltersReportersAndLanguage(t *testing.T) {
+	gh := &fakeGitHub{
+		files: []FileChange{{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+package main\n"}},
+		contents: map[string]string{".github/ai-review.yml": `
+language: zh-CN
+summary_comment:
+  enabled: false
+check_run:
+  enabled: false
+`},
+	}
+	summary := &fakeReporter{name: "pr_summary_comment"}
+	check := &fakeReporter{name: "github_check_run"}
+	other := &fakeReporter{name: "other"}
+	svc := NewServiceWithOptions(gh, &fakeLLM{result: ReviewResult{Summary: "整体风险较低。"}}, MultiReporter{summary, check, other}, nil, ServiceOptions{
+		GlobalConfig: GlobalReviewConfig{
+			ReviewEnabled: true, SummaryCommentEnabled: true, CheckRunEnabled: true, InlineCommentsEnabled: true,
+			GoAnalyzerEnabled: false, SafeCheckoutEnabled: false, Language: LanguageEnglish,
+			InlineMaxComments: 10, InlineSeverityThreshold: SeverityBlocker, InlineConfidenceThreshold: 0.7,
+		},
+	})
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if summary.started != 0 || summary.completed != 0 || check.started != 0 || check.completed != 0 {
+		t.Fatalf("disabled reporters ran: summary=%+v check=%+v", summary, check)
+	}
+	if other.started != 1 || other.completed != 1 {
+		t.Fatalf("unfiltered reporter did not run: %+v", other)
+	}
+}
+
+func TestServiceRepositoryConfigDisablesAnalyzerAndIgnoresPaths(t *testing.T) {
+	gh := &fakeGitHub{
+		files: []FileChange{
+			{Filename: "main.go", Status: "modified", Patch: "@@ -1 +1 @@\n+package main\n"},
+			{Filename: "docs/secret.md", Status: "modified", Patch: "@@ -1 +1 @@\n+private docs\n"},
+		},
+		contents: map[string]string{
+			".github/ai-review.yml": "go_analyzer:\n  enabled: false\npath_ignore:\n  - docs/**\n",
+			"main.go":               "package main\n",
+			"docs/secret.md":        "do-not-send-to-llm\n",
+		},
+	}
+	llm := &fakeLLM{result: ReviewResult{Summary: "Looks focused."}}
+	analyzer := &fakeAnalyzer{}
+	svc := NewServiceWithOptions(gh, llm, &fakeReporter{}, nil, ServiceOptions{
+		GlobalConfig: GlobalReviewConfig{
+			ReviewEnabled: true, SummaryCommentEnabled: true, CheckRunEnabled: true, InlineCommentsEnabled: true,
+			GoAnalyzerEnabled: true, SafeCheckoutEnabled: true, Language: LanguageEnglish,
+			InlineMaxComments: 10, InlineSeverityThreshold: SeverityBlocker, InlineConfidenceThreshold: 0.7,
+		},
+	})
+	svc.SetGoAnalyzer(analyzer)
+
+	if err := svc.Process(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if analyzer.called {
+		t.Fatal("analyzer ran despite repo config disabling it")
+	}
+	if strings.Contains(llm.prompt, "do-not-send-to-llm") || strings.Contains(llm.prompt, "docs/secret.md\n") {
+		t.Fatalf("ignored path leaked into prompt:\n%s", llm.prompt)
+	}
+	if !strings.Contains(llm.prompt, string(OmitRepoConfigIgnored)) {
+		t.Fatalf("prompt missing ignored-path limitation:\n%s", llm.prompt)
+	}
+}
+
 func TestServiceLogsSafeContextSummary(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
@@ -397,6 +506,7 @@ type fakeGitHub struct {
 	owner          string
 	repo           string
 	pullNumber     int
+	filesFetched   int
 	files          []FileChange
 	contents       map[string]string
 	dirs           map[string][]RepositoryEntry
@@ -407,6 +517,7 @@ type fakeGitHub struct {
 
 func (f *fakeGitHub) FetchPullRequestFiles(ctx context.Context, installationID int64, owner, repo string, pullNumber int) ([]FileChange, error) {
 	f.installationID, f.owner, f.repo, f.pullNumber = installationID, owner, repo, pullNumber
+	f.filesFetched++
 	return f.files, f.err
 }
 
@@ -455,6 +566,7 @@ func (f *fakeComments) Publish(ctx context.Context, installationID int64, owner,
 }
 
 type fakeReporter struct {
+	name        string
 	started     int
 	completed   int
 	suppressed  int
@@ -466,7 +578,12 @@ type fakeReporter struct {
 	completeErr error
 }
 
-func (f *fakeReporter) Name() string { return "fake" }
+func (f *fakeReporter) Name() string {
+	if f.name != "" {
+		return f.name
+	}
+	return "fake"
+}
 
 func (f *fakeReporter) JobStarted(ctx context.Context, job Job) error {
 	f.started++

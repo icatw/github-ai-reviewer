@@ -4,6 +4,7 @@
 *.pem
 *.key
 private-key*.pem
+config/mcporter.json
 data/
 *.db
 /server

@@ -30,6 +30,10 @@ type Reporter interface {
 	JobFailed(ctx context.Context, job Job, failure Failure) error
 }
 
+type InlineCapableReporter interface {
+	SupportsInlineComments() bool
+}
+
 type MultiReporter []Reporter
 
 func (m MultiReporter) Name() string { return "multi" }
@@ -72,6 +76,46 @@ func (m MultiReporter) fanOut(event string, call func(Reporter) error) error {
 		return ReporterError{Failures: failures}
 	}
 	return nil
+}
+
+func FilterReporter(reporter Reporter, effective EffectiveReviewConfig) Reporter {
+	if reporter == nil {
+		return nil
+	}
+	if multi, ok := reporter.(MultiReporter); ok {
+		out := make(MultiReporter, 0, len(multi))
+		for _, item := range multi {
+			if reporterEnabledByConfig(item, effective) {
+				out = append(out, item)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	if !reporterEnabledByConfig(reporter, effective) {
+		return nil
+	}
+	return reporter
+}
+
+func reporterEnabledByConfig(reporter Reporter, effective EffectiveReviewConfig) bool {
+	if reporter == nil {
+		return false
+	}
+	switch reporter.Name() {
+	case "pr_summary_comment":
+		if effective.SummaryCommentEnabled {
+			return true
+		}
+		inlineCapable, ok := reporter.(InlineCapableReporter)
+		return ok && inlineCapable.SupportsInlineComments() && effective.InlineCommentsEnabled
+	case checkRunReporterName:
+		return effective.CheckRunEnabled
+	default:
+		return true
+	}
 }
 
 type ReporterError struct {

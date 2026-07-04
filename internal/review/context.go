@@ -24,16 +24,17 @@ const (
 	SectionStaticCheck ContextSection = "static_check_context"
 	SectionOmitted     ContextSection = "omitted_context"
 
-	OmitDeleted         OmitReason = "deleted"
-	OmitBinary          OmitReason = "binary"
-	OmitGenerated       OmitReason = "generated"
-	OmitLockFile        OmitReason = "lock_file"
-	OmitVendorOrDist    OmitReason = "vendor_or_dist"
-	OmitOversized       OmitReason = "oversized"
-	OmitTruncated       OmitReason = "truncated"
-	OmitBudgetExhausted OmitReason = "budget_exhausted"
-	OmitMissing         OmitReason = "missing"
-	OmitFetchError      OmitReason = "fetch_error"
+	OmitDeleted           OmitReason = "deleted"
+	OmitBinary            OmitReason = "binary"
+	OmitGenerated         OmitReason = "generated"
+	OmitLockFile          OmitReason = "lock_file"
+	OmitVendorOrDist      OmitReason = "vendor_or_dist"
+	OmitOversized         OmitReason = "oversized"
+	OmitTruncated         OmitReason = "truncated"
+	OmitBudgetExhausted   OmitReason = "budget_exhausted"
+	OmitMissing           OmitReason = "missing"
+	OmitFetchError        OmitReason = "fetch_error"
+	OmitRepoConfigIgnored OmitReason = "repo_config_ignored"
 )
 
 var DefaultContextBudgets = ContextBudgets{

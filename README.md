@@ -11,11 +11,15 @@ The project is intentionally built as a real service rather than a `git diff | p
 - Supported PR actions: `opened`, `synchronize`, `reopened`, and cleanup-only `closed`.
 - GitHub App JWT generation and installation token exchange.
 - Pull request changed-files and patch retrieval.
-- OpenAI-compatible LLM review request with bounded context.
-- Structured review result parsing and validation.
+- OpenAI-compatible LLM review request with bounded patch, file, related source/test, repository docs, policy, and static-check context.
+- Structured review result parsing, validation, and evidence-based finding verification.
 - Stable PR summary comment upsert using a hidden marker, with marker-scoped inactive cleanup when a PR is closed or merged.
 - Advisory `AI Review` Check Run reporting with non-blocking conclusions for AI findings.
+- Manual `/ai-review` trigger comments on open pull requests.
+- Repository-level `.github/ai-review.yml` or `.github/ai-review.yaml` policy overlay for disabling or tightening review behavior.
 - Optional local Go workspace checkout provider, disabled by default.
+- Optional Go analyzer evidence through the safe workspace provider.
+- Batched inline PR review comments for high-confidence RIGHT-side diff findings when globally enabled.
 - Production deployment documentation, systemd service management, local smoke tests, and real E2E evidence guidance.
 
 ## Non-Goals For The Current Version
@@ -24,7 +28,6 @@ These are intentionally outside the current production-ready slice:
 
 - Dashboard, billing, tenant management, or hosted SaaS account flows.
 - Automatic code modification or merge blocking.
-- Inline review comments on exact diff lines.
 - Full repository indexing, vector search, AST call graphs, or long-term review memory.
 - Arbitrary CI command execution against private repositories.
 - Enabling real repository checkout without explicit operator configuration.
@@ -45,6 +48,7 @@ GitHub pull_request webhook
   -> structured result validation
   -> PR comment upsert
   -> advisory Check Run update
+  -> optional inline PR review comments
 
 GitHub pull_request.closed webhook
   -> HTTP server
@@ -137,6 +141,36 @@ Check Runs are enabled by default. If the GitHub App installation lacks `Checks:
 
 Do not commit local environment files, private keys, installation tokens, API keys, local databases, generated binaries, raw webhook payloads, raw prompts, raw model responses, or filled private E2E evidence.
 
+### Repository Review Config
+
+Repositories may add `.github/ai-review.yml` or `.github/ai-review.yaml` to disable or tighten review behavior for that repository. The service prefers `.github/ai-review.yml` when both files exist. Missing config is normal. Invalid config is ignored for that job, falls back to service defaults, and is reported only as a safe bounded limitation.
+
+Example:
+
+```yaml
+enabled: true
+language: zh-CN
+summary_comment:
+  enabled: true
+check_run:
+  enabled: false
+inline_comments:
+  enabled: true
+  max_comments: 3
+  severity_threshold: warning
+  confidence_threshold: 0.85
+path_ignore:
+  - docs/**
+  - vendor/
+  - README.md
+go_analyzer:
+  enabled: false
+```
+
+Supported fields are `enabled`, `language`, `summary_comment.enabled`, `check_run.enabled`, `inline_comments.enabled`, `inline_comments.max_comments`, `inline_comments.severity_threshold`, `inline_comments.confidence_threshold`, `path_ignore`, and `go_analyzer.enabled`. `language` supports `en` and `zh-CN`. Inline severity values are `blocker`, `warning`, `suggestion`, and `question`; repository config can only tighten the globally allowed threshold and comment limit.
+
+Repository config cannot enable globally disabled Check Runs, inline comments, optional Go analyzer execution, safe checkout behavior, auto-fix, auto-merge, request-changes reviews, failing merge gates, or merge blocking. `path_ignore` accepts repository-relative exact paths, directory prefixes ending in `/`, and directory globs ending in `/**`; absolute, parent-traversing, or broader glob patterns are invalid.
+
 ## Workspace Checkout
 
 Local workspace checkout is disabled by default:
@@ -220,12 +254,11 @@ It reports file paths only. It does not read or print secret file contents.
 
 Planned future work:
 
-- Repository configuration file such as `.github/ai-review.yml`.
-- Inline review comments for high-confidence findings.
-- Static analyzer integration and finding verification.
 - Durable job storage and review history.
-- Better repository context selection for large changes.
+- Repository-level config follow-ups such as more fields, clearer owner-facing diagnostics, and optional service kill switches.
+- Repository context improvements beyond the current bounded retrieval strategy.
 - Optional CLI or GitHub Action entrypoints.
+- Dashboard, billing, tenant management, and hosted SaaS account flows.
 
 ## License
 

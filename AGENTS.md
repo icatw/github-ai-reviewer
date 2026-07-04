@@ -4,19 +4,24 @@ This file gives Hermes, Codex, and other coding agents project-specific context 
 
 ## Project Summary
 
-`github-ai-reviewer` is a Go service for a GitHub App based AI code review bot. The product goal is to let a user install the GitHub App on selected repositories, then automatically review Pull Requests when they are opened or updated.
+`github-ai-reviewer` is a Go service for a GitHub App based AI code review bot. The product goal is to let a user install the GitHub App on selected repositories, then automatically review Pull Requests when they are opened, updated, manually requested, or cleaned up after close/merge.
 
-The first milestone is not a full Codex-like repository intelligence system. The first milestone is the smallest real GitHub App loop:
+The service has moved beyond the original minimum loop and now includes multiple advisory outputs and safety layers:
 
 ```text
 pull_request webhook
   -> verify GitHub signature
-  -> parse supported PR event
+  -> parse supported PR / issue-comment event
   -> create review job
   -> exchange installation token
+  -> discover safe repository-level review config
   -> fetch PR changed files / patches
+  -> build bounded repository context
+  -> optionally run safe Go analyzer evidence
   -> call OpenAI-compatible LLM
-  -> post PR comment
+  -> verify findings against available evidence
+  -> post PR summary comment / advisory Check Run / optional inline comments
+  -> cleanup marker-owned output on close or merge
 ```
 
 Read these docs before non-trivial work:
@@ -27,21 +32,21 @@ Read these docs before non-trivial work:
 
 ## Current Milestone
 
-Focus on M1: GitHub App minimum loop.
-
-M1 includes:
+Focus on production-safe advisory review behavior. Current implemented capabilities include:
 
 - HTTP server with `/healthz` and `/github/webhook`.
 - Config loading from environment variables / `.env`.
 - GitHub webhook signature verification using `X-Hub-Signature-256`.
-- Pull request event parsing for `opened`, `synchronize`, and `reopened`.
+- Pull request event parsing for `opened`, `synchronize`, `reopened`, cleanup-only `closed`, and manual `/ai-review` comments on open PRs.
 - Review job creation with `installation_id`, owner, repo, pull number, and head SHA.
 - GitHub App JWT generation and installation token exchange.
 - Pull Request changed files fetching.
-- LLM review summary.
-- PR issue comment publishing.
+- Bounded repo-aware context retrieval, including policy files such as `.github/ai-review.yml`.
+- Repository-level AI review config that can disable or tighten behavior without overriding global safety settings.
+- LLM review summary with structured result validation and evidence-based finding verification.
+- PR summary comment publishing, advisory Check Run reporting, optional inline PR review comments, optional safe Go analyzer evidence, production/systemd operations, E2E guidance, and PR close/merge cleanup.
 
-Do not implement these in M1 unless explicitly requested:
+Do not implement these unless explicitly requested:
 
 - Dashboard.
 - Billing or tenant management.
@@ -49,10 +54,8 @@ Do not implement these in M1 unless explicitly requested:
 - Full repository indexing.
 - Tree-sitter / AST call graph.
 - Automatic code fixing.
-- Inline review comments.
-- Check Run gating.
-
-Those are later milestones.
+- Request-changes reviews, failing merge gates, auto-merge, or AI-finding-derived blocking policy.
+- Arbitrary analyzer or CI command execution.
 
 ## Tech Stack
 
@@ -64,7 +67,7 @@ Preferred libraries:
 - GitHub API: `github.com/google/go-github/v68/github` or current stable major.
 - JWT: `github.com/golang-jwt/jwt/v5`.
 - Env loading: keep simple; use standard env first. A lightweight dotenv dependency is acceptable if needed.
-- Storage: SQLite later. M1 may start without persistence if job state is in memory and tests cover behavior.
+- Storage: SQLite later. Current review job state may remain in memory unless durable history is part of an explicit change.
 
 Keep the dependency set small until M1 is verified end to end.
 
@@ -105,7 +108,7 @@ Avoid putting core logic in `cmd/server/main.go`. Keep `main.go` as wiring only.
 
 For every core package, add unit tests when behavior is deterministic.
 
-Minimum tests for M1:
+Minimum deterministic coverage includes:
 
 - `internal/webhook`: valid signature accepted.
 - `internal/webhook`: invalid signature rejected.
@@ -114,6 +117,7 @@ Minimum tests for M1:
 - `internal/webhook`: supported PR action produces expected review job fields.
 - `internal/config`: missing required config returns a useful error.
 - `internal/comment`: markdown rendering is stable and does not emit empty/noisy comments.
+- `internal/review`: repository config parsing/merge safety, missing/invalid config fallback, reporter gating, path ignore behavior, analyzer gating, and evidence verification.
 
 Run before reporting completion:
 
@@ -134,50 +138,44 @@ Use a different port if the default is already occupied.
 
 ## GitHub App Notes
 
-Minimum repository permissions for M1:
+Minimum repository permissions:
 
 ```text
 Metadata: Read-only
 Contents: Read-only
 Pull requests: Read and write
 Issues: Read and write
-```
-
-`Issues: write` is needed because PR conversation comments use the Issues comment API.
-
-Future Check Run integration requires:
-
-```text
 Checks: Read and write
 ```
 
-Webhook events for M1:
+`Issues: write` is needed because PR conversation comments use the Issues comment API. `Checks: write` is needed for the advisory Check Run.
+
+Webhook events:
 
 ```text
 Pull request
+Issue comment
 ```
 
-Supported actions for M1:
+Supported actions:
 
 ```text
 opened
 synchronize
 reopened
+closed
 ```
 
-Future command interaction can add:
-
-```text
-Issue comment
-```
+Issue comments support manual `/ai-review` commands on open pull requests.
 
 ## Accuracy Policy
 
-MVP should be conservative.
+The service should stay conservative.
 
-- Post a summary comment only.
+- AI findings are advisory.
 - Do not request changes automatically.
-- Do not fail checks in M1.
+- Do not fail checks based on AI findings.
+- Do not auto-fix, auto-merge, or block merging.
 - Ask the LLM for concise, evidence-based feedback.
 - If context is insufficient, output a question or limitation instead of a blocker.
 
@@ -264,9 +262,7 @@ data/
 server
 ```
 
-## Completion Criteria for M1
-
-M1 is complete only when all are true:
+## Completion Criteria
 
 - Unit tests pass.
 - Server builds.
@@ -274,6 +270,6 @@ M1 is complete only when all are true:
 - Webhook signature verification has tests.
 - PR event parsing has tests using fixtures.
 - A real GitHub App can be configured with the documented permissions.
-- A real test PR can trigger the service and receive a PR comment.
+- A real test PR can trigger the service and receive the enabled advisory outputs.
 
-Until the real PR comment is observed through GitHub API or PR page, the project is not end-to-end complete.
+Until real PR output is observed through GitHub API or the PR page, the project is not end-to-end complete.
