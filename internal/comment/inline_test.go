@@ -463,6 +463,62 @@ func TestPublisherUpdatesExistingInlineComment(t *testing.T) {
 	}
 }
 
+func TestPublisherCleanupMarksOnlyServiceInlineCommentsInactive(t *testing.T) {
+	fake := &fakeInlineCommenter{
+		reviewComments: []ReviewComment{
+			{ID: 55, AuthorType: "Bot", Body: InlineMarker + " fingerprint=aaaaaaaaaaaaaaaa -->\nold service comment"},
+			{ID: 56, AuthorType: "Bot", Body: "other bot comment"},
+			{ID: 57, AuthorType: "User", Body: InlineMarker + " fingerprint=bbbbbbbbbbbbbbbb -->\nhuman comment"},
+			{ID: 58, AuthorType: "Bot", Body: InlineMarker + " -->\nmissing fingerprint"},
+		},
+	}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: true})
+	err := pub.Cleanup(context.Background(), review.CleanupJob{
+		InstallationID: 42,
+		Owner:          "octo",
+		Repo:           "repo",
+		PullNumber:     7,
+		HeadSHA:        "abc123",
+		State:          review.CleanupStateMerged,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if len(fake.createdPullRequestReview.Comments) != 0 || len(fake.fallbackCreatedReviews) != 0 || fake.createdReview.Body != "" {
+		t.Fatalf("cleanup created inline output: review=%+v fallback=%+v direct=%+v", fake.createdPullRequestReview, fake.fallbackCreatedReviews, fake.createdReview)
+	}
+	got := fake.updatedReviewBodies[55]
+	if !strings.Contains(got, InlineStaleMarker) || !strings.Contains(got, "inactive because this pull request was merged") || !strings.Contains(got, "aaaaaaaaaaaaaaaa") {
+		t.Fatalf("updated service body = %q", got)
+	}
+	for _, id := range []int64{56, 57, 58} {
+		if _, ok := fake.updatedReviewBodies[id]; ok {
+			t.Fatalf("updated non-service comment id=%d", id)
+		}
+	}
+}
+
+func TestPublisherCleanupSkipsInlineWhenDisabled(t *testing.T) {
+	fake := &fakeInlineCommenter{
+		reviewComments: []ReviewComment{{ID: 55, AuthorType: "Bot", Body: InlineMarker + " fingerprint=aaaaaaaaaaaaaaaa -->\nold service comment"}},
+	}
+	pub := NewPublisherWithOptions(fake, PublisherOptions{InlineCommentsEnabled: false})
+	err := pub.Cleanup(context.Background(), review.CleanupJob{
+		InstallationID: 42,
+		Owner:          "octo",
+		Repo:           "repo",
+		PullNumber:     7,
+		HeadSHA:        "abc123",
+		State:          review.CleanupStateClosed,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if len(fake.updatedReviewBodies) != 0 {
+		t.Fatalf("updated inline comments = %+v, want none", fake.updatedReviewBodies)
+	}
+}
+
 func eligibleFinding(file string, line int, title, evidence string) review.Finding {
 	return review.Finding{
 		Severity:        "warning",

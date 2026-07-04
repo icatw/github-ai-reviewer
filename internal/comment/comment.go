@@ -131,6 +131,43 @@ func (p *Publisher) PublishForHead(ctx context.Context, installationID int64, ow
 	return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, result)
 }
 
+func (p *Publisher) Cleanup(ctx context.Context, job review.CleanupJob) error {
+	body := RenderInactive(job.State, p.language)
+	comments, err := p.client.ListIssueComments(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber)
+	if err != nil {
+		p.logCleanup(job, "summary_list_failed")
+		return err
+	}
+	updatedSummary := false
+	for _, issueComment := range comments {
+		if strings.Contains(issueComment.Body, Marker) && issueComment.AuthorType == "Bot" {
+			if err := p.client.UpdateIssueComment(ctx, job.InstallationID, job.Owner, job.Repo, issueComment.ID, body); err != nil {
+				p.logCleanup(job, "summary_update_failed")
+				return err
+			}
+			updatedSummary = true
+			break
+		}
+	}
+	category := "summary_marker_missing"
+	if updatedSummary {
+		category = "summary_inactive"
+	}
+	p.logCleanup(job, category)
+	return p.cleanupInlineComments(ctx, job)
+}
+
+func RenderInactive(state review.CleanupState, language review.Language) string {
+	labels := inactiveLabelsForLanguage(state, language)
+	var b strings.Builder
+	b.WriteString(Marker)
+	fmt.Fprintf(&b, "\n## %s\n\n", labels.Title)
+	b.WriteString(labels.Body)
+	b.WriteString("\n\n---\n")
+	b.WriteString(labels.Footer)
+	return b.String()
+}
+
 func writeListSection(b *strings.Builder, title string, values []string) {
 	if len(values) == 0 {
 		return
@@ -198,4 +235,46 @@ func labelsForLanguage(language review.Language) renderLabels {
 		Limitations:     "Limitations",
 		Footer:          "This is a non-blocking AI-generated review based on the available PR diff context.",
 	}
+}
+
+type inactiveLabels struct {
+	Title  string
+	Body   string
+	Footer string
+}
+
+func inactiveLabelsForLanguage(state review.CleanupState, language review.Language) inactiveLabels {
+	if language == review.LanguageSimplifiedChinese {
+		if state == review.CleanupStateMerged {
+			return inactiveLabels{
+				Title:  "AI Review 已归档",
+				Body:   "此 AI Review 输出已停用，因为该 Pull Request 已合并。不会阻塞合并，也不会触发新的 LLM Review。",
+				Footer: "这是一个非阻塞的 AI Review 生命周期状态。",
+			}
+		}
+		return inactiveLabels{
+			Title:  "AI Review 已归档",
+			Body:   "此 AI Review 输出已停用，因为该 Pull Request 已关闭。不会阻塞合并，也不会触发新的 LLM Review。",
+			Footer: "这是一个非阻塞的 AI Review 生命周期状态。",
+		}
+	}
+	if state == review.CleanupStateMerged {
+		return inactiveLabels{
+			Title:  "AI Review Archived",
+			Body:   "This AI Review output is inactive because this pull request was merged. No new LLM review was started, and this status is advisory and non-blocking.",
+			Footer: "This is a non-blocking AI Review lifecycle status.",
+		}
+	}
+	return inactiveLabels{
+		Title:  "AI Review Archived",
+		Body:   "This AI Review output is inactive because this pull request was closed. No new LLM review was started, and this status is advisory and non-blocking.",
+		Footer: "This is a non-blocking AI Review lifecycle status.",
+	}
+}
+
+func (p *Publisher) logCleanup(job review.CleanupJob, category string) {
+	if p.logger == nil {
+		return
+	}
+	p.logger.Printf("cleanup completed delivery=%s repo=%s/%s pull=%d state=%s category=%s", job.DeliveryID, job.Owner, job.Repo, job.PullNumber, job.State, category)
 }

@@ -8,12 +8,12 @@ The project is intentionally built as a real service rather than a `git diff | p
 
 - GitHub App webhook endpoint for `pull_request` events.
 - `X-Hub-Signature-256` verification before payload parsing.
-- Supported PR actions: `opened`, `synchronize`, and `reopened`.
+- Supported PR actions: `opened`, `synchronize`, `reopened`, and cleanup-only `closed`.
 - GitHub App JWT generation and installation token exchange.
 - Pull request changed-files and patch retrieval.
 - OpenAI-compatible LLM review request with bounded context.
 - Structured review result parsing and validation.
-- Stable PR summary comment upsert using a hidden marker.
+- Stable PR summary comment upsert using a hidden marker, with marker-scoped inactive cleanup when a PR is closed or merged.
 - Advisory `AI Review` Check Run reporting with non-blocking conclusions for AI findings.
 - Optional local Go workspace checkout provider, disabled by default.
 - Production deployment documentation, systemd service management, local smoke tests, and real E2E evidence guidance.
@@ -45,6 +45,12 @@ GitHub pull_request webhook
   -> structured result validation
   -> PR comment upsert
   -> advisory Check Run update
+
+GitHub pull_request.closed webhook
+  -> HTTP server
+  -> webhook signature verification
+  -> cleanup job creation
+  -> existing marker-owned bot output marked inactive
 ```
 
 Core packages:
@@ -85,8 +91,10 @@ Payload URL: https://<your-public-host>/github/webhook
 Content type: application/json
 Secret: use the same value as GITHUB_WEBHOOK_SECRET
 Events: Pull request, Issue comment
-Supported actions: opened, synchronize, reopened, and `/ai-review` comments on pull requests
+Supported actions: opened, synchronize, reopened, closed, and `/ai-review` comments on open pull requests
 ```
+
+Closed or merged pull requests are cleanup-only targets. The service does not fetch PR files for review, call the LLM, run analyzers, create new inline reviews, request changes, auto-fix, auto-merge, or block merging for `pull_request.closed` events. `/ai-review` commands on closed or merged PRs are accepted only for safe cleanup/ignore handling and do not start normal review work.
 
 ## Configuration
 

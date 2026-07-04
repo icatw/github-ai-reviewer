@@ -42,6 +42,8 @@ Record safe metadata only. Do not paste raw webhook payloads.
 | pull_request | opened | [REDACTED_OR_SUFFIX] | [STATUS] | [202/OTHER] | [SAFE_NOTE] |
 | pull_request | synchronize | [REDACTED_OR_SUFFIX] | [STATUS] | [202/OTHER] | [SAFE_NOTE] |
 | pull_request | reopened | [REDACTED_OR_SUFFIX_OR_NOT_RUN] | [STATUS_OR_REASON] | [STATUS_OR_REASON] | [SAFE_NOTE] |
+| pull_request | closed, unmerged | [REDACTED_OR_SUFFIX] | [STATUS] | [202/OTHER] | cleanup-only; no LLM review |
+| pull_request | closed, merged | [REDACTED_OR_SUFFIX] | [STATUS] | [202/OTHER] | cleanup-only; no LLM review |
 
 ## PR Comment Upsert
 
@@ -52,6 +54,10 @@ Comment updated after synchronize: [YES|NO]
 Duplicate marker comments observed: [NO|YES - count]
 Comment URL or ID: [REDACTED_OR_SAFE_PUBLIC_URL]
 Secret/private-source exposure observed in comment: [NO|YES - describe safely]
+Inactive after closed-unmerged: [YES|NO|NOT_RUN]
+Inactive after merged: [YES|NO|NOT_RUN]
+History deleted or unrelated comments altered: [NO|YES - describe safely]
+Closed PR `/ai-review` started normal review work: [NO|YES]
 ```
 
 ## Check Run
@@ -63,6 +69,7 @@ Conclusion after completed review: [neutral|success|failure|missing]
 Failure caused by AI finding severity: [NO|YES]
 Check Run URL or ID: [REDACTED_OR_SAFE_PUBLIC_URL]
 Secret/private-source exposure observed in Check Run output: [NO|YES - describe safely]
+New Check Run created solely for close/merge cleanup: [NO|YES]
 ```
 
 ## Leak Review

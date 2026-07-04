@@ -138,15 +138,17 @@ scripts/check_e2e_safety.sh
 The filled evidence file must not contain secrets, raw webhook payloads, raw prompts, raw model responses, installation tokens, private keys, or private source excerpts. Keep it outside git unless every identifier and excerpt is intentionally safe to publish.
 
 1. Confirm `/healthz` returns `ok` through the public deployment URL.
-2. Confirm GitHub webhook delivery receives HTTP 202 for supported `pull_request` actions: `opened`, `synchronize`, and `reopened`.
-3. Confirm unsupported actions return without starting a review job.
-4. Confirm one PR summary comment is created with the marker `<!-- github-ai-reviewer:review-comment:v1 -->`.
-5. Push another commit to the same PR and confirm the marker comment is updated instead of duplicated.
-6. Confirm the Check Run named `AI Review` is created or updated with a `neutral` conclusion for completed AI findings.
-7. Confirm Check Run `failure` appears only for infrastructure execution failures, not because an AI finding has high severity.
-8. Review logs for absence of webhook secret, private key material, installation tokens, LLM API key, raw prompts, raw model responses, and private source dumps.
-9. Review PR-facing comment and Check Run output for absence of credentials and unintended private source excerpts.
-10. If workspace checkout was enabled for the test, confirm workspace directories are contained under `GO_WORKSPACE_ROOT` and cleanup/monitoring catches leftover directories.
+2. Confirm GitHub webhook delivery receives HTTP 202 for supported review `pull_request` actions: `opened`, `synchronize`, and `reopened`.
+3. Confirm `pull_request.closed` receives cleanup-only handling for both closed-unmerged and merged PRs: no LLM review job starts, no new inline review is created, and existing marker-owned summary or inline output is marked inactive when present.
+4. Confirm unsupported actions return without starting a review job.
+5. Confirm one PR summary comment is created with the marker `<!-- github-ai-reviewer:review-comment:v1 -->`.
+6. Push another commit to the same PR and confirm the marker comment is updated instead of duplicated.
+7. Confirm `/ai-review` on an open PR still starts normal review work, while `/ai-review` on closed or merged PRs does not.
+8. Confirm the Check Run named `AI Review` is created or updated with a `neutral` conclusion for completed AI findings. Close/merge cleanup leaves Check Runs as historical advisory status and does not create a new Check Run solely for cleanup.
+9. Confirm Check Run `failure` appears only for infrastructure execution failures, not because an AI finding has high severity.
+10. Review logs for absence of webhook secret, private key material, installation tokens, LLM API key, raw prompts, raw model responses, and private source dumps.
+11. Review PR-facing comment and Check Run output for absence of credentials and unintended private source excerpts.
+12. If workspace checkout was enabled for the test, confirm workspace directories are contained under `GO_WORKSPACE_ROOT` and cleanup/monitoring catches leftover directories.
 
 ## Rollback
 

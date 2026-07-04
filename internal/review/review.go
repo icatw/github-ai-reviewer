@@ -17,6 +17,30 @@ type Job struct {
 	DeliveryID     string
 }
 
+type CleanupState string
+
+const (
+	CleanupStateClosed CleanupState = "closed"
+	CleanupStateMerged CleanupState = "merged"
+)
+
+type CleanupJob struct {
+	InstallationID int64
+	Owner          string
+	Repo           string
+	PullNumber     int
+	HeadSHA        string
+	Action         string
+	DeliveryID     string
+	State          CleanupState
+}
+
+type PullRequestMetadata struct {
+	HeadSHA string
+	State   string
+	Merged  bool
+}
+
 type FileChange struct {
 	Filename  string
 	Status    string

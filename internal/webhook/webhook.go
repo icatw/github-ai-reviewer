@@ -15,6 +15,7 @@ import (
 type ParseResult struct {
 	Ignored bool
 	Job     *review.Job
+	Cleanup *review.CleanupJob
 	Command *ReviewCommand
 }
 
@@ -63,6 +64,22 @@ func parsePullRequestDelivery(deliveryID string, body []byte) (ParseResult, erro
 	var payload pullRequestPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ParseResult{}, fmt.Errorf("parse pull_request payload: %w", err)
+	}
+	if payload.Action == "closed" {
+		cleanup := review.CleanupJob{
+			InstallationID: payload.Installation.ID,
+			Owner:          payload.Repository.Owner.Login,
+			Repo:           payload.Repository.Name,
+			PullNumber:     payload.PullRequest.Number,
+			HeadSHA:        payload.PullRequest.Head.SHA,
+			Action:         payload.Action,
+			DeliveryID:     deliveryID,
+			State:          cleanupState(payload.PullRequest.Merged.Value),
+		}
+		if err := validateCleanupJob(cleanup, payload.PullRequest.Merged.Set); err != nil {
+			return ParseResult{}, err
+		}
+		return ParseResult{Cleanup: &cleanup}, nil
 	}
 	if !isSupportedAction(payload.Action) {
 		return ParseResult{Ignored: true}, nil
@@ -119,6 +136,13 @@ func isSupportedAction(action string) bool {
 	}
 }
 
+func cleanupState(merged bool) review.CleanupState {
+	if merged {
+		return review.CleanupStateMerged
+	}
+	return review.CleanupStateClosed
+}
+
 func isReviewCommand(body string) bool {
 	if body == "/ai-review" {
 		return true
@@ -145,6 +169,35 @@ func validateJob(job review.Job) error {
 	}
 	if job.HeadSHA == "" {
 		missing = append(missing, "pull_request.head.sha")
+	}
+	if job.DeliveryID == "" {
+		missing = append(missing, "X-GitHub-Delivery")
+	}
+	if len(missing) > 0 {
+		return errors.New("missing required webhook fields: " + strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func validateCleanupJob(job review.CleanupJob, mergedSet bool) error {
+	var missing []string
+	if job.InstallationID == 0 {
+		missing = append(missing, "installation.id")
+	}
+	if job.Owner == "" {
+		missing = append(missing, "repository.owner.login")
+	}
+	if job.Repo == "" {
+		missing = append(missing, "repository.name")
+	}
+	if job.PullNumber == 0 {
+		missing = append(missing, "pull_request.number")
+	}
+	if job.HeadSHA == "" {
+		missing = append(missing, "pull_request.head.sha")
+	}
+	if !mergedSet {
+		missing = append(missing, "pull_request.merged")
 	}
 	if job.DeliveryID == "" {
 		missing = append(missing, "X-GitHub-Delivery")
@@ -194,7 +247,23 @@ type pullRequestPayload struct {
 		Head   struct {
 			SHA string `json:"sha"`
 		} `json:"head"`
+		Merged boolField `json:"merged"`
 	} `json:"pull_request"`
+}
+
+type boolField struct {
+	Value bool
+	Set   bool
+}
+
+func (b *boolField) UnmarshalJSON(data []byte) error {
+	var value bool
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	b.Value = value
+	b.Set = true
+	return nil
 }
 
 type issueCommentPayload struct {

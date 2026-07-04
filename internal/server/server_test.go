@@ -43,6 +43,26 @@ func TestWebhookAcceptedSubmitsJobAndReturns202(t *testing.T) {
 	}
 }
 
+func TestWebhookClosedPullRequestSubmitsCleanupOnly(t *testing.T) {
+	sink := &recordingSink{}
+	cleanupSink := &recordingCleanupSink{}
+	srv := NewWithCleanup("secret", sink, nil, cleanupSink)
+	body := []byte(`{"action":"closed","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"pull_request":{"number":7,"head":{"sha":"abc123"},"merged":true}}`)
+	req := signedWebhookRequest("pull_request", "delivery-close", body)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(sink.jobs) != 0 {
+		t.Fatalf("normal review jobs = %+v, want none", sink.jobs)
+	}
+	if len(cleanupSink.jobs) != 1 || cleanupSink.jobs[0].State != review.CleanupStateMerged || cleanupSink.jobs[0].HeadSHA != "abc123" {
+		t.Fatalf("cleanup jobs = %+v", cleanupSink.jobs)
+	}
+}
+
 func TestWebhookIssueCommentCommandResolvesHeadSHABeforeSubmittingJob(t *testing.T) {
 	sink := &recordingSink{}
 	resolver := &recordingResolver{headSHA: "abc123"}
@@ -64,6 +84,72 @@ func TestWebhookIssueCommentCommandResolvesHeadSHABeforeSubmittingJob(t *testing
 	}
 	if resolver.calls != 1 || resolver.installationID != 42 || resolver.owner != "octo" || resolver.repo != "repo" || resolver.pullNumber != 7 {
 		t.Fatalf("resolver = %+v", resolver)
+	}
+}
+
+func TestWebhookIssueCommentCommandOnClosedPullRequestSubmitsCleanupOnly(t *testing.T) {
+	sink := &recordingSink{}
+	cleanupSink := &recordingCleanupSink{}
+	resolver := &recordingMetadataResolver{metadata: serverPullRequestMetadata("abc123", "closed", false)}
+	srv := NewWithCleanup("secret", sink, resolver, cleanupSink)
+	body := []byte(`{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review"}}`)
+	req := signedWebhookRequest("issue_comment", "delivery-command", body)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(sink.jobs) != 0 {
+		t.Fatalf("normal review jobs = %+v, want none", sink.jobs)
+	}
+	if len(cleanupSink.jobs) != 1 || cleanupSink.jobs[0].State != review.CleanupStateClosed || cleanupSink.jobs[0].DeliveryID != "delivery-command" {
+		t.Fatalf("cleanup jobs = %+v", cleanupSink.jobs)
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d", resolver.calls)
+	}
+}
+
+func TestWebhookIssueCommentCommandOnMergedPullRequestSubmitsCleanupOnly(t *testing.T) {
+	sink := &recordingSink{}
+	cleanupSink := &recordingCleanupSink{}
+	resolver := &recordingMetadataResolver{metadata: serverPullRequestMetadata("abc123", "closed", true)}
+	srv := NewWithCleanup("secret", sink, resolver, cleanupSink)
+	body := []byte(`{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review"}}`)
+	req := signedWebhookRequest("issue_comment", "delivery-command", body)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(sink.jobs) != 0 {
+		t.Fatalf("normal review jobs = %+v, want none", sink.jobs)
+	}
+	if len(cleanupSink.jobs) != 1 || cleanupSink.jobs[0].State != review.CleanupStateMerged {
+		t.Fatalf("cleanup jobs = %+v", cleanupSink.jobs)
+	}
+}
+
+func TestWebhookIssueCommentCommandOnOpenPullRequestPreservesReviewJob(t *testing.T) {
+	sink := &recordingSink{}
+	cleanupSink := &recordingCleanupSink{}
+	resolver := &recordingMetadataResolver{metadata: serverPullRequestMetadata("abc123", "open", false)}
+	srv := NewWithCleanup("secret", sink, resolver, cleanupSink)
+	body := []byte(`{"action":"created","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"issue":{"number":7,"pull_request":{"url":"https://api.github.com/repos/octo/repo/pulls/7"}},"comment":{"body":"/ai-review"}}`)
+	req := signedWebhookRequest("issue_comment", "delivery-command", body)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(sink.jobs) != 1 || sink.jobs[0].HeadSHA != "abc123" {
+		t.Fatalf("normal review jobs = %+v", sink.jobs)
+	}
+	if len(cleanupSink.jobs) != 0 {
+		t.Fatalf("cleanup jobs = %+v, want none", cleanupSink.jobs)
 	}
 }
 
@@ -216,6 +302,15 @@ func (r *recordingSink) Submit(job review.Job) error {
 	return nil
 }
 
+type recordingCleanupSink struct {
+	jobs []review.CleanupJob
+}
+
+func (r *recordingCleanupSink) SubmitCleanup(job review.CleanupJob) error {
+	r.jobs = append(r.jobs, job)
+	return nil
+}
+
 type recordingResolver struct {
 	headSHA        string
 	err            error
@@ -233,6 +328,34 @@ func (r *recordingResolver) ResolvePullRequestHeadSHA(ctx context.Context, insta
 	r.repo = repo
 	r.pullNumber = pullNumber
 	return r.headSHA, r.err
+}
+
+type recordingMetadataResolver struct {
+	metadata       PullRequestMetadata
+	err            error
+	calls          int
+	installationID int64
+	owner          string
+	repo           string
+	pullNumber     int
+}
+
+func (r *recordingMetadataResolver) ResolvePullRequestMetadata(ctx context.Context, installationID int64, owner, repo string, pullNumber int) (PullRequestMetadata, error) {
+	r.calls++
+	r.installationID = installationID
+	r.owner = owner
+	r.repo = repo
+	r.pullNumber = pullNumber
+	return r.metadata, r.err
+}
+
+func (r *recordingMetadataResolver) ResolvePullRequestHeadSHA(ctx context.Context, installationID int64, owner, repo string, pullNumber int) (string, error) {
+	metadata, err := r.ResolvePullRequestMetadata(ctx, installationID, owner, repo, pullNumber)
+	return metadata.HeadSHA, err
+}
+
+func serverPullRequestMetadata(headSHA, state string, merged bool) PullRequestMetadata {
+	return PullRequestMetadata{HeadSHA: headSHA, State: state, Merged: merged}
 }
 
 func testSignature(secret string, body []byte) string {

@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strconv"
 	"testing"
+
+	"github-ai-reviewer/internal/review"
 )
 
 func TestVerifySignatureAcceptsValidSignature(t *testing.T) {
@@ -42,12 +45,12 @@ func TestParseDeliveryIgnoresUnsupportedEvent(t *testing.T) {
 }
 
 func TestParseDeliveryIgnoresUnsupportedPullRequestAction(t *testing.T) {
-	payload := []byte(`{"action":"closed","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"pull_request":{"number":7,"head":{"sha":"abc123"}}}`)
+	payload := []byte(`{"action":"labeled","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"pull_request":{"number":7,"head":{"sha":"abc123"},"merged":false}}`)
 	result, err := ParseDelivery("pull_request", "delivery-2", payload)
 	if err != nil {
 		t.Fatalf("ParseDelivery() error = %v", err)
 	}
-	if !result.Ignored || result.Job != nil {
+	if !result.Ignored || result.Job != nil || result.Cleanup != nil {
 		t.Fatalf("result = %+v, want ignored without job", result)
 	}
 }
@@ -142,6 +145,40 @@ func TestParseDeliveryExtractsSupportedJob(t *testing.T) {
 	job := *result.Job
 	if job.InstallationID != 42 || job.Owner != "octo" || job.Repo != "repo" || job.PullNumber != 7 || job.HeadSHA != "abc123" || job.Action != "opened" || job.DeliveryID != "delivery-4" {
 		t.Fatalf("unexpected job: %+v", job)
+	}
+}
+
+func TestParseDeliveryExtractsClosedPullRequestCleanup(t *testing.T) {
+	tests := []struct {
+		name   string
+		merged bool
+		state  review.CleanupState
+	}{
+		{name: "closed unmerged", merged: false, state: review.CleanupStateClosed},
+		{name: "merged", merged: true, state: review.CleanupStateMerged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(`{"action":"closed","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"pull_request":{"number":7,"head":{"sha":"abc123"},"merged":` + strconv.FormatBool(tt.merged) + `}}`)
+			result, err := ParseDelivery("pull_request", "delivery-close", payload)
+			if err != nil {
+				t.Fatalf("ParseDelivery() error = %v", err)
+			}
+			if result.Ignored || result.Job != nil || result.Cleanup == nil {
+				t.Fatalf("result = %+v, want cleanup without review job", result)
+			}
+			cleanup := *result.Cleanup
+			if cleanup.InstallationID != 42 || cleanup.Owner != "octo" || cleanup.Repo != "repo" || cleanup.PullNumber != 7 || cleanup.HeadSHA != "abc123" || cleanup.Action != "closed" || cleanup.DeliveryID != "delivery-close" || cleanup.State != tt.state {
+				t.Fatalf("unexpected cleanup: %+v", cleanup)
+			}
+		})
+	}
+}
+
+func TestParseDeliveryRejectsClosedPullRequestMissingMergedState(t *testing.T) {
+	payload := []byte(`{"action":"closed","installation":{"id":42},"repository":{"name":"repo","owner":{"login":"octo"}},"pull_request":{"number":7,"head":{"sha":"abc123"}}}`)
+	if _, err := ParseDelivery("pull_request", "delivery-close", payload); err == nil {
+		t.Fatal("ParseDelivery() error = nil, want missing merged field error")
 	}
 }
 

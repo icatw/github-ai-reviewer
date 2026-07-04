@@ -180,6 +180,96 @@ func TestPublisherNoOpsEmptyBody(t *testing.T) {
 	}
 }
 
+func TestPublisherMarksExistingSummaryInactiveForClosedPullRequest(t *testing.T) {
+	fake := &fakeIssueCommenter{
+		comments: []IssueComment{{ID: 11, Body: "old\n" + Marker, AuthorType: "Bot"}},
+	}
+	pub := NewPublisher(fake)
+	err := pub.Cleanup(context.Background(), review.CleanupJob{
+		InstallationID: 42,
+		Owner:          "octo",
+		Repo:           "repo",
+		PullNumber:     7,
+		HeadSHA:        "abc123",
+		State:          review.CleanupStateClosed,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if fake.updatedID != 11 || fake.createdBody != "" {
+		t.Fatalf("fake = %+v", fake)
+	}
+	if !strings.Contains(fake.updatedBody, Marker) || !strings.Contains(fake.updatedBody, "inactive because this pull request was closed") || strings.Contains(fake.updatedBody, "old") {
+		t.Fatalf("updated body = %q", fake.updatedBody)
+	}
+}
+
+func TestPublisherMarksExistingSummaryInactiveForMergedPullRequest(t *testing.T) {
+	fake := &fakeIssueCommenter{
+		comments: []IssueComment{{ID: 11, Body: "old\n" + Marker, AuthorType: "Bot"}},
+	}
+	pub := NewPublisher(fake)
+	err := pub.Cleanup(context.Background(), review.CleanupJob{
+		InstallationID: 42,
+		Owner:          "octo",
+		Repo:           "repo",
+		PullNumber:     7,
+		HeadSHA:        "abc123",
+		State:          review.CleanupStateMerged,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if fake.updatedID != 11 || fake.createdBody != "" {
+		t.Fatalf("fake = %+v", fake)
+	}
+	if !strings.Contains(fake.updatedBody, "inactive because this pull request was merged") {
+		t.Fatalf("updated body = %q", fake.updatedBody)
+	}
+}
+
+func TestPublisherCleanupMissingMarkerDoesNotCreateComment(t *testing.T) {
+	fake := &fakeIssueCommenter{
+		comments: []IssueComment{{ID: 11, Body: "other bot comment", AuthorType: "Bot"}},
+	}
+	pub := NewPublisher(fake)
+	err := pub.Cleanup(context.Background(), review.CleanupJob{
+		InstallationID: 42,
+		Owner:          "octo",
+		Repo:           "repo",
+		PullNumber:     7,
+		HeadSHA:        "abc123",
+		State:          review.CleanupStateClosed,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if fake.createdBody != "" || fake.updatedBody != "" {
+		t.Fatalf("fake = %+v, want no create or update", fake)
+	}
+}
+
+func TestPublisherCleanupIgnoresHumanMarkerComment(t *testing.T) {
+	fake := &fakeIssueCommenter{
+		comments: []IssueComment{{ID: 11, Body: "human\n" + Marker, AuthorType: "User"}},
+	}
+	pub := NewPublisher(fake)
+	err := pub.Cleanup(context.Background(), review.CleanupJob{
+		InstallationID: 42,
+		Owner:          "octo",
+		Repo:           "repo",
+		PullNumber:     7,
+		HeadSHA:        "abc123",
+		State:          review.CleanupStateClosed,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if fake.createdBody != "" || fake.updatedBody != "" {
+		t.Fatalf("fake = %+v, want no create or update", fake)
+	}
+}
+
 type fakeIssueCommenter struct {
 	comments    []IssueComment
 	listed      bool

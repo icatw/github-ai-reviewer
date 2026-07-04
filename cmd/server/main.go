@@ -47,8 +47,10 @@ func main() {
 	})
 	w := worker.New(reviewSvc, logger)
 	w.Start(context.Background())
+	cleanupWorker := worker.NewCleanup(publisher, logger)
+	cleanupWorker.Start(context.Background())
 
-	handler := server.NewWithResolver(cfg.GitHub.WebhookSecret, w, gh)
+	handler := server.NewWithCleanup(cfg.GitHub.WebhookSecret, w, gh, cleanupWorker)
 	logger.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, handler); err != nil {
 		logger.Fatalf("server error: %v", err)

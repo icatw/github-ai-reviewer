@@ -174,6 +174,38 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 	return nil
 }
 
+func (p *Publisher) cleanupInlineComments(ctx context.Context, job review.CleanupJob) error {
+	if !p.inlineEnabled {
+		return nil
+	}
+	client, ok := p.client.(PullRequestReviewCommenter)
+	if !ok {
+		return nil
+	}
+	comments, err := client.ListPullRequestReviewComments(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber)
+	if err != nil {
+		p.logCleanup(job, "inline_list_failed")
+		return err
+	}
+	updated := 0
+	for _, existingComment := range existingInlineComments(comments) {
+		if strings.Contains(existingComment.Body, InlineStaleMarker) {
+			continue
+		}
+		fingerprint := extractInlineFingerprint(existingComment.Body)
+		body := renderInactiveInlineComment(existingComment.Body, fingerprint, job.State)
+		if err := client.UpdatePullRequestReviewComment(ctx, job.InstallationID, job.Owner, job.Repo, existingComment.ID, body); err != nil {
+			p.logCleanup(job, "inline_update_failed")
+			continue
+		}
+		updated++
+	}
+	if updated > 0 {
+		p.logCleanup(job, "inline_inactive")
+	}
+	return nil
+}
+
 func (p *Publisher) logInlineStats(owner, repo string, number int, stats InlineStats) {
 	if p.logger == nil {
 		return
@@ -255,6 +287,19 @@ func renderStaleInlineComment(existingBody, fingerprint, headSHA string) string 
 		stale += fmt.Sprintf(" for `%s`", headSHA)
 	}
 	stale += "._"
+	body := strings.TrimSpace(existingBody)
+	if body == "" {
+		return fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, stale)
+	}
+	return body + "\n\n" + stale
+}
+
+func renderInactiveInlineComment(existingBody, fingerprint string, state review.CleanupState) string {
+	reason := "closed"
+	if state == review.CleanupStateMerged {
+		reason = "merged"
+	}
+	stale := InlineStaleMarker + "\n_Inactive: this finding is inactive because this pull request was " + reason + "._"
 	body := strings.TrimSpace(existingBody)
 	if body == "" {
 		return fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, stale)

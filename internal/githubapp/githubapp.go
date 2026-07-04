@@ -157,19 +157,30 @@ func (c *Client) FetchPullRequestFiles(ctx context.Context, installationID int64
 }
 
 func (c *Client) ResolvePullRequestHeadSHA(ctx context.Context, installationID int64, owner, repo string, pullNumber int) (string, error) {
-	token, err := c.installationToken(ctx, installationID)
+	metadata, err := c.ResolvePullRequestMetadata(ctx, installationID, owner, repo, pullNumber)
 	if err != nil {
 		return "", err
+	}
+	if metadata.HeadSHA == "" {
+		return "", errors.New("pull request response missing head sha")
+	}
+	return metadata.HeadSHA, nil
+}
+
+func (c *Client) ResolvePullRequestMetadata(ctx context.Context, installationID int64, owner, repo string, pullNumber int) (review.PullRequestMetadata, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return review.PullRequestMetadata{}, err
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, pullNumber)
 	var out githubPullRequest
 	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &out, http.StatusOK); err != nil {
-		return "", err
+		return review.PullRequestMetadata{}, err
 	}
 	if out.Head.SHA == "" {
-		return "", errors.New("pull request response missing head sha")
+		return review.PullRequestMetadata{}, errors.New("pull request response missing head sha")
 	}
-	return out.Head.SHA, nil
+	return review.PullRequestMetadata{HeadSHA: out.Head.SHA, State: out.State, Merged: out.Merged}, nil
 }
 
 func (c *Client) FetchFileContent(ctx context.Context, installationID int64, owner, repo, ref, filePath string) (string, error) {
@@ -485,6 +496,8 @@ type githubPullRequest struct {
 	Head struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	State  string `json:"state"`
+	Merged bool   `json:"merged"`
 }
 
 type githubIssueComment struct {
