@@ -11,11 +11,12 @@ import (
 )
 
 type Config struct {
-	HTTPAddr    string
-	GitHub      GitHubConfig
-	LLM         LLMConfig
-	GoWorkspace GoWorkspaceConfig
-	CheckRun    CheckRunConfig
+	HTTPAddr       string
+	GitHub         GitHubConfig
+	LLM            LLMConfig
+	GoWorkspace    GoWorkspaceConfig
+	CheckRun       CheckRunConfig
+	InlineComments InlineCommentsConfig
 }
 
 type GitHubConfig struct {
@@ -43,6 +44,10 @@ type CheckRunConfig struct {
 	Enabled bool
 }
 
+type InlineCommentsConfig struct {
+	Enabled bool
+}
+
 func LoadFromEnv() (Config, error) {
 	cfg := Config{
 		HTTPAddr: envOrDefault("HTTP_ADDR", ":8088"),
@@ -65,6 +70,9 @@ func LoadFromEnv() (Config, error) {
 		},
 		CheckRun: CheckRunConfig{
 			Enabled: parseBoolEnvDefault("CHECK_RUN_ENABLED", true),
+		},
+		InlineComments: InlineCommentsConfig{
+			Enabled: parseBoolEnv("INLINE_COMMENTS_ENABLED"),
 		},
 	}
 	if appID := os.Getenv("GITHUB_APP_ID"); appID != "" {

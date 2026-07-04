@@ -31,7 +31,7 @@ func main() {
 	}
 	language := review.NormalizeLanguage(cfg.LLM.Language)
 	llmClient := llm.NewClientWithOptions(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, nil, llm.ClientOptions{Language: language})
-	publisher := comment.NewPublisherWithOptions(gh, comment.PublisherOptions{Language: language})
+	publisher := comment.NewPublisherWithOptions(gh, comment.PublisherOptions{Language: language, InlineCommentsEnabled: cfg.InlineComments.Enabled})
 	reporters := review.MultiReporter{
 		comment.NewReporter(publisher),
 	}

@@ -24,7 +24,7 @@ func (r *Reporter) ReviewCompleted(ctx context.Context, job review.Job, result r
 	if r.publisher == nil {
 		return nil
 	}
-	return r.publisher.Publish(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber, result)
+	return r.publisher.PublishForHead(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber, job.HeadSHA, result)
 }
 
 func (r *Reporter) OutputSuppressed(ctx context.Context, job review.Job, result review.ReviewResult) error {

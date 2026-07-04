@@ -254,6 +254,48 @@ func (c *Client) UpdateIssueComment(ctx context.Context, installationID int64, o
 	return c.doJSON(ctx, http.MethodPatch, path, token, map[string]string{"body": body}, nil, http.StatusOK)
 }
 
+func (c *Client) ListPullRequestReviewComments(ctx context.Context, installationID int64, owner, repo string, pullNumber int) ([]comment.ReviewComment, error) {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", owner, repo, pullNumber)
+	var comments []githubReviewComment
+	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &comments, http.StatusOK); err != nil {
+		return nil, err
+	}
+	out := make([]comment.ReviewComment, 0, len(comments))
+	for _, reviewComment := range comments {
+		out = append(out, comment.ReviewComment{ID: reviewComment.ID, Body: reviewComment.Body, AuthorType: reviewComment.User.Type})
+	}
+	return out, nil
+}
+
+func (c *Client) CreatePullRequestReviewComment(ctx context.Context, installationID int64, owner, repo string, pullNumber int, req comment.ReviewCommentRequest) error {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments", owner, repo, pullNumber)
+	in := githubReviewCommentRequest{
+		Body:     req.Body,
+		CommitID: req.CommitID,
+		Path:     req.Path,
+		Line:     req.Line,
+		Side:     req.Side,
+	}
+	return c.doJSON(ctx, http.MethodPost, path, token, in, nil, http.StatusCreated)
+}
+
+func (c *Client) UpdatePullRequestReviewComment(ctx context.Context, installationID int64, owner, repo string, commentID int64, body string) error {
+	token, err := c.installationToken(ctx, installationID)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/comments/%d", owner, repo, commentID)
+	return c.doJSON(ctx, http.MethodPatch, path, token, map[string]string{"body": body}, nil, http.StatusOK)
+}
+
 func (c *Client) ListCheckRuns(ctx context.Context, installationID int64, owner, repo, ref string) ([]review.CheckRun, error) {
 	token, err := c.installationToken(ctx, installationID)
 	if err != nil {
@@ -421,6 +463,20 @@ type githubIssueComment struct {
 	ID   int64      `json:"id"`
 	Body string     `json:"body"`
 	User githubUser `json:"user"`
+}
+
+type githubReviewComment struct {
+	ID   int64      `json:"id"`
+	Body string     `json:"body"`
+	User githubUser `json:"user"`
+}
+
+type githubReviewCommentRequest struct {
+	Body     string `json:"body"`
+	CommitID string `json:"commit_id"`
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	Side     string `json:"side"`
 }
 
 type githubUser struct {

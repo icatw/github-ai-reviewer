@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github-ai-reviewer/internal/comment"
 	"github-ai-reviewer/internal/review"
 )
 
@@ -288,6 +289,69 @@ func TestClientListsAndUpdatesIssueComments(t *testing.T) {
 	}
 	if !sawList || !sawPatch {
 		t.Fatalf("sawList=%v sawPatch=%v", sawList, sawPatch)
+	}
+}
+
+func TestClientCreatesListsAndUpdatesPullRequestReviewComments(t *testing.T) {
+	key := testPrivateKey(t)
+	var sawList, sawCreate, sawUpdate bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/42/access_tokens":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/octo/repo/pulls/7/comments":
+			sawList = r.Header.Get("Authorization") == "Bearer installation-token"
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id":   31,
+				"body": "<!-- github-ai-reviewer:inline-comment:v1 fingerprint=abc -->\nold",
+				"user": map[string]any{"type": "Bot"},
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/octo/repo/pulls/7/comments":
+			sawCreate = r.Header.Get("Authorization") == "Bearer installation-token"
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req["commit_id"] != "abc123" || req["path"] != "main.go" || req["side"] != "RIGHT" || req["line"].(float64) != 12 {
+				t.Fatalf("create request = %+v", req)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 32})
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/octo/repo/pulls/comments/31":
+			sawUpdate = r.Header.Get("Authorization") == "Bearer installation-token"
+			var req map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req["body"] != "new inline body" {
+				t.Fatalf("body = %q", req["body"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 31})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(123, key, srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	comments, err := client.ListPullRequestReviewComments(context.Background(), 42, "octo", "repo", 7)
+	if err != nil {
+		t.Fatalf("ListPullRequestReviewComments() error = %v", err)
+	}
+	if len(comments) != 1 || comments[0].ID != 31 || comments[0].AuthorType != "Bot" {
+		t.Fatalf("comments = %+v", comments)
+	}
+	if err := client.CreatePullRequestReviewComment(context.Background(), 42, "octo", "repo", 7, comment.ReviewCommentRequest{CommitID: "abc123", Path: "main.go", Line: 12, Side: "RIGHT", Body: "inline body"}); err != nil {
+		t.Fatalf("CreatePullRequestReviewComment() error = %v", err)
+	}
+	if err := client.UpdatePullRequestReviewComment(context.Background(), 42, "octo", "repo", 31, "new inline body"); err != nil {
+		t.Fatalf("UpdatePullRequestReviewComment() error = %v", err)
+	}
+	if !sawList || !sawCreate || !sawUpdate {
+		t.Fatalf("sawList=%v sawCreate=%v sawUpdate=%v", sawList, sawCreate, sawUpdate)
 	}
 }
 

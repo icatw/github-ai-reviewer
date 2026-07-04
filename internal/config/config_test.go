@@ -30,6 +30,27 @@ func TestLoadFromEnvSucceeds(t *testing.T) {
 	if !cfg.CheckRun.Enabled {
 		t.Fatalf("CheckRun.Enabled = false, want default enabled")
 	}
+	if cfg.InlineComments.Enabled {
+		t.Fatalf("InlineComments.Enabled = true, want default disabled")
+	}
+}
+
+func TestLoadFromEnvCanEnableInlineComments(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
+	t.Setenv("GITHUB_APP_ID", "123")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "key")
+	t.Setenv("LLM_BASE_URL", "https://llm.example/v1")
+	t.Setenv("LLM_API_KEY", "api-key")
+	t.Setenv("LLM_MODEL", "review-model")
+	t.Setenv("INLINE_COMMENTS_ENABLED", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.InlineComments.Enabled {
+		t.Fatalf("InlineComments.Enabled = false, want enabled")
+	}
 }
 
 func TestLoadFromEnvCanDisableCheckRunReporter(t *testing.T) {

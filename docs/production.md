@@ -62,6 +62,14 @@ CHECK_RUN_ENABLED=false
 
 Check Runs are enabled by default. If the GitHub App installation lacks `Checks: write`, the service degrades to PR summary comments without failing the review job; set `CHECK_RUN_ENABLED=false` to disable Check Run attempts entirely.
 
+Optional inline PR review comments:
+
+```text
+INLINE_COMMENTS_ENABLED=true
+```
+
+Inline comments are disabled by default. When enabled, the bot still posts or updates the summary comment, then adds or updates up to 10 inline review comments for findings whose `file:line` can be mapped to a RIGHT-side line in the current PR diff. Findings that cannot be mapped remain only in the summary comment. This requires `Pull requests: read and write` on the GitHub App installation.
+
 ## Workspace Checkout
 
 Workspace checkout is disabled by default:

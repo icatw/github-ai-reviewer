@@ -38,6 +38,13 @@ type Report struct {
 	ExpectedFindings []ExpectedFinding `json:"expected_findings,omitempty"`
 }
 
+type SuiteReport struct {
+	FixtureCount  int      `json:"fixture_count"`
+	Metrics       Metrics  `json:"metrics"`
+	SourceMetrics Metrics  `json:"source_metrics"`
+	Cases         []Report `json:"cases"`
+}
+
 type Metrics struct {
 	RelevantTotal  int     `json:"relevant_total"`
 	RetrievedTotal int     `json:"retrieved_total"`
@@ -102,6 +109,18 @@ func Run(ctx context.Context, fixture Fixture) (Report, error) {
 	return buildReport(fixture, repoContext), nil
 }
 
+func RunSuite(ctx context.Context, fixtures []Fixture) (SuiteReport, error) {
+	reports := make([]Report, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		report, err := Run(ctx, fixture)
+		if err != nil {
+			return SuiteReport{}, err
+		}
+		reports = append(reports, report)
+	}
+	return buildSuiteReport(reports), nil
+}
+
 func DecodeFixture(data []byte) (Fixture, error) {
 	var fixture Fixture
 	if err := json.Unmarshal(data, &fixture); err != nil {
@@ -163,6 +182,41 @@ func buildReport(fixture Fixture, ctx review.RepoContext) Report {
 		},
 		ExpectedFindings: fixture.ExpectedFindings,
 	}
+}
+
+func buildSuiteReport(reports []Report) SuiteReport {
+	metrics := Metrics{}
+	sourceMetrics := Metrics{}
+	for _, report := range reports {
+		metrics = addMetrics(metrics, report.Metrics)
+		sourceMetrics = addMetrics(sourceMetrics, report.SourceMetrics)
+	}
+	metrics = finalizeMetrics(metrics)
+	sourceMetrics = finalizeMetrics(sourceMetrics)
+	return SuiteReport{
+		FixtureCount:  len(reports),
+		Metrics:       metrics,
+		SourceMetrics: sourceMetrics,
+		Cases:         reports,
+	}
+}
+
+func addMetrics(total, item Metrics) Metrics {
+	total.RelevantTotal += item.RelevantTotal
+	total.RetrievedTotal += item.RetrievedTotal
+	total.TruePositive += item.TruePositive
+	total.FalsePositive += item.FalsePositive
+	total.FalseNegative += item.FalseNegative
+	return total
+}
+
+func finalizeMetrics(metrics Metrics) Metrics {
+	metrics.Precision = ratio(metrics.TruePositive, metrics.TruePositive+metrics.FalsePositive)
+	metrics.Recall = ratio(metrics.TruePositive, metrics.TruePositive+metrics.FalseNegative)
+	if metrics.Precision+metrics.Recall > 0 {
+		metrics.F1 = 2 * metrics.Precision * metrics.Recall / (metrics.Precision + metrics.Recall)
+	}
+	return metrics
 }
 
 type fixtureReader struct {

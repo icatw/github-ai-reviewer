@@ -100,6 +100,48 @@ func TestRunReportsPythonContextPrecisionRecall(t *testing.T) {
 	}
 }
 
+func TestRunSuiteAggregatesMetrics(t *testing.T) {
+	fixtures := []Fixture{
+		{
+			Name:  "go-change",
+			Job:   review.Job{Owner: "octo", Repo: "repo", PullNumber: 1, HeadSHA: "abc"},
+			Files: []review.FileChange{{Filename: "handler/user.go", Status: "modified", Patch: "@@ handler"}},
+			RepoFiles: map[string]string{
+				"handler/user.go":      "package handler\nfunc Handle() {}\n",
+				"handler/user_test.go": "package handler\nfunc TestHandle() {}\n",
+			},
+			GoldenRelevantFiles: []string{"handler/user.go", "handler/user_test.go"},
+		},
+		{
+			Name:  "python-change",
+			Job:   review.Job{Owner: "octo", Repo: "repo", PullNumber: 2, HeadSHA: "def"},
+			Files: []review.FileChange{{Filename: "app/api/user.py", Status: "modified", Patch: "@@ route"}},
+			RepoFiles: map[string]string{
+				"app/api/user.py":      "def route(): pass\n",
+				"app/api/test_user.py": "def test_route(): pass\n",
+			},
+			GoldenRelevantFiles: []string{"app/api/user.py", "app/api/test_user.py"},
+		},
+	}
+
+	report, err := RunSuite(context.Background(), fixtures)
+	if err != nil {
+		t.Fatalf("RunSuite() error = %v", err)
+	}
+	if report.FixtureCount != 2 || len(report.Cases) != 2 {
+		t.Fatalf("unexpected suite shape: %+v", report)
+	}
+	if report.Metrics.RelevantTotal != report.Cases[0].Metrics.RelevantTotal+report.Cases[1].Metrics.RelevantTotal {
+		t.Fatalf("relevant total was not aggregated: %+v", report.Metrics)
+	}
+	if report.Metrics.TruePositive != report.Cases[0].Metrics.TruePositive+report.Cases[1].Metrics.TruePositive {
+		t.Fatalf("true positives were not aggregated: %+v", report.Metrics)
+	}
+	if report.SourceMetrics.FalseNegative != report.Cases[0].SourceMetrics.FalseNegative+report.Cases[1].SourceMetrics.FalseNegative {
+		t.Fatalf("source false negatives were not aggregated: %+v", report.SourceMetrics)
+	}
+}
+
 func TestDecodeFixtureRejectsEmptyFiles(t *testing.T) {
 	_, err := DecodeFixture([]byte(`{"name":"bad","repo_files":{}}`))
 	if err == nil {

@@ -162,9 +162,20 @@ Use the offline review benchmark to measure repository-context retrieval before 
 ```bash
 go run ./cmd/review-bench -fixture testdata/review-bench/cross-package-auth.json
 go run ./cmd/review-bench -fixture testdata/review-bench/python-fastapi-user.json
+go run ./cmd/review-bench -fixtures 'testdata/review-bench/*.json'
 ```
 
-A fixture contains changed PR files, an in-memory repository file map, and `golden_relevant_files`. The command runs the same `BuildRepoContext` path used by production and reports retrieved files, omissions, byte budget use, precision, recall, and F1. This keeps global-context review work measurable without GitHub credentials or LLM calls.
+A fixture contains changed PR files, an in-memory repository file map, and `golden_relevant_files`. The command runs the same `BuildRepoContext` path used by production and reports retrieved files, omissions, byte budget use, precision, recall, and F1. With `-fixtures`, the report includes per-fixture cases plus aggregate micro-averaged precision, recall, and F1 across the whole suite. This keeps global-context review work measurable without GitHub credentials or LLM calls.
+
+Generate an offline fixture from a real pull request with the GitHub App credentials configured in an environment file:
+
+```bash
+go run ./cmd/review-bench-from-pr -env-file .env.production -owner OWNER -repo REPO -pull NUMBER -out /tmp/review-fixture.json
+```
+
+The generator is read-only: it resolves the repository installation, fetches PR metadata and changed files, records only repository files that `BuildRepoContext` actually reads, and writes a local fixture. Do not commit fixtures generated from private repositories unless they have been reviewed and intentionally sanitized.
+
+Inline PR review comments are available behind `INLINE_COMMENTS_ENABLED=true`. The bot only creates inline comments for findings whose `file:line` maps to a RIGHT-side line in the PR diff; unmapped findings stay in the summary comment.
 
 ## Production Deployment
 

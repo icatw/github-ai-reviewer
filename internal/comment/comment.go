@@ -23,12 +23,14 @@ type IssueCommenter interface {
 }
 
 type Publisher struct {
-	client   IssueCommenter
-	language review.Language
+	client        IssueCommenter
+	language      review.Language
+	inlineEnabled bool
 }
 
 type PublisherOptions struct {
-	Language review.Language
+	Language              review.Language
+	InlineCommentsEnabled bool
 }
 
 func NewPublisher(client IssueCommenter) *Publisher {
@@ -40,7 +42,7 @@ func NewPublisherWithOptions(client IssueCommenter, opts PublisherOptions) *Publ
 	if language == "" {
 		language = review.LanguageEnglish
 	}
-	return &Publisher{client: client, language: language}
+	return &Publisher{client: client, language: language, inlineEnabled: opts.InlineCommentsEnabled}
 }
 
 func Render(result review.ReviewResult) (string, bool) {
@@ -94,6 +96,10 @@ func RenderWithLanguage(result review.ReviewResult, language review.Language) (s
 }
 
 func (p *Publisher) Publish(ctx context.Context, installationID int64, owner, repo string, number int, result review.ReviewResult) error {
+	return p.PublishForHead(ctx, installationID, owner, repo, number, "", result)
+}
+
+func (p *Publisher) PublishForHead(ctx context.Context, installationID int64, owner, repo string, number int, headSHA string, result review.ReviewResult) error {
 	body, ok := RenderWithLanguage(result, p.language)
 	if !ok {
 		return nil
@@ -107,10 +113,16 @@ func (p *Publisher) Publish(ctx context.Context, installationID int64, owner, re
 	}
 	for _, issueComment := range comments {
 		if strings.Contains(issueComment.Body, Marker) && issueComment.AuthorType == "Bot" {
-			return p.client.UpdateIssueComment(ctx, installationID, owner, repo, issueComment.ID, body)
+			if err := p.client.UpdateIssueComment(ctx, installationID, owner, repo, issueComment.ID, body); err != nil {
+				return err
+			}
+			return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, result)
 		}
 	}
-	return p.client.CreateIssueComment(ctx, installationID, owner, repo, number, body)
+	if err := p.client.CreateIssueComment(ctx, installationID, owner, repo, number, body); err != nil {
+		return err
+	}
+	return p.publishInlineComments(ctx, installationID, owner, repo, number, headSHA, result)
 }
 
 func writeListSection(b *strings.Builder, title string, values []string) {
