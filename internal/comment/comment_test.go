@@ -41,7 +41,7 @@ Looks focused.
 
 ### Findings
 
-Findings are advisory and non-blocking in this M2 review.
+Findings are advisory and non-blocking.
 
 1. **Warning: Nil response can panic**
    - Category: correctness
@@ -69,6 +69,33 @@ This is a non-blocking AI-generated review based on the available PR diff contex
 func TestRenderSuppressesEmptyOutput(t *testing.T) {
 	if body, ok := Render(review.ReviewResult{}); ok || body != "" {
 		t.Fatalf("Render() = %q, %v; want empty false", body, ok)
+	}
+}
+
+func TestRenderSummaryAdvisoryIsMilestoneNeutral(t *testing.T) {
+	line := 12
+	body, ok := Render(review.ReviewResult{
+		Summary: "Looks focused.",
+		Findings: []review.Finding{{
+			Severity:        "warning",
+			File:            "main.go",
+			Line:            &line,
+			Title:           "Nil response can panic",
+			Evidence:        "resp is used before err is checked",
+			FailureScenario: "provider returns a transport error",
+			Suggestion:      "check err before using resp",
+		}},
+	})
+	if !ok {
+		t.Fatal("Render() ok = false, want true")
+	}
+	for _, want := range []string{Marker, "Findings are advisory and non-blocking.", "This is a non-blocking AI-generated review"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "M2 Review") || strings.Contains(body, "M2 review") {
+		t.Fatalf("body contains stale milestone wording:\n%s", body)
 	}
 }
 

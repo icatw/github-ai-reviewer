@@ -152,6 +152,122 @@ func TestPublisherCreatesInlineCommentForHighConfidenceFinding(t *testing.T) {
 	}
 }
 
+func TestRenderInlineFindingStartsWithVisibleSeverityLabel(t *testing.T) {
+	line := 20
+	blocker := eligibleFinding("main.go", line, "Nil response can panic", "resp is dereferenced")
+	blocker.Severity = "blocker"
+	warning := eligibleFinding("main.go", line, "Missing error check", "err is ignored")
+
+	tests := []struct {
+		name    string
+		finding review.Finding
+		want    string
+	}{
+		{name: "blocker", finding: blocker, want: "🚨 **Blocking risk:** Nil response can panic"},
+		{name: "warning", finding: warning, want: "⚠️ **Potential issue:** Missing error check"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := renderInlineFinding(tt.finding, review.LanguageEnglish)
+			if !strings.HasPrefix(body, tt.want) {
+				t.Fatalf("body prefix mismatch\nwant prefix: %q\nbody:\n%s", tt.want, body)
+			}
+			if strings.HasPrefix(strings.TrimSpace(body), InlineMarker) {
+				t.Fatalf("body starts with hidden marker:\n%s", body)
+			}
+		})
+	}
+}
+
+func TestRenderInlineFindingUsesCollapsedDetails(t *testing.T) {
+	line := 20
+	confidence := 0.84
+	finding := eligibleFinding("main.go", line, "Nil response can panic", "resp is dereferenced before err is checked")
+	finding.FailureScenario = "transport error returns nil resp"
+	finding.Suggestion = "Check err before using resp."
+	finding.Confidence = &confidence
+
+	body := renderInlineFinding(finding, review.LanguageEnglish)
+	detailsStart := strings.Index(body, "<details>")
+	detailsEnd := strings.Index(body, "</details>")
+	if detailsStart < 0 || detailsEnd < detailsStart {
+		t.Fatalf("body missing details block:\n%s", body)
+	}
+	visible := body[:detailsStart]
+	details := body[detailsStart:detailsEnd]
+	for _, notWant := range []string{"- Evidence:", "- Failure scenario:", "- Confidence:"} {
+		if strings.Contains(visible, notWant) {
+			t.Fatalf("visible section contains %q:\n%s", notWant, body)
+		}
+	}
+	for _, want := range []string{
+		"<summary>Details</summary>",
+		"**Evidence:** resp is dereferenced before err is checked",
+		"**Failure scenario:** transport error returns nil resp",
+		"**Confidence:** 0.84",
+	} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("details missing %q:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(visible, "**Suggestion:** Check err before using resp.") {
+		t.Fatalf("visible section missing suggestion:\n%s", body)
+	}
+}
+
+func TestRenderInlineFindingOmitsMissingConfidence(t *testing.T) {
+	line := 20
+	finding := eligibleFinding("main.go", line, "Missing error check", "err is ignored")
+
+	body := renderInlineFinding(finding, review.LanguageEnglish)
+	if strings.Contains(body, "Confidence") || strings.Contains(body, "0.00") {
+		t.Fatalf("body fabricated confidence:\n%s", body)
+	}
+}
+
+func TestRenderInlineFindingLocalizesChineseLabels(t *testing.T) {
+	line := 20
+	confidence := 0.91
+	finding := eligibleFinding("main.go", line, "空指针风险", "resp 在检查 err 前被使用")
+	finding.Severity = "blocker"
+	finding.FailureScenario = "请求失败时 resp 可能为空"
+	finding.Suggestion = "先检查 err。"
+	finding.Confidence = &confidence
+
+	body := renderInlineFinding(finding, review.LanguageSimplifiedChinese)
+	for _, want := range []string{
+		"🚨 **阻塞风险:** 空指针风险",
+		"**建议:** 先检查 err。",
+		"<summary>详情</summary>",
+		"**证据:** resp 在检查 err 前被使用",
+		"**失败场景:** 请求失败时 resp 可能为空",
+		"**置信度:** 0.91",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestRenderPullRequestReviewBodyIsHumanFriendly(t *testing.T) {
+	english := renderPullRequestReviewBody(2, review.LanguageEnglish)
+	for _, want := range []string{"Review Cat left 2 inline comment(s).", "advisory", "non-blocking"} {
+		if !strings.Contains(english, want) {
+			t.Fatalf("English body missing %q: %s", want, english)
+		}
+	}
+	if strings.Contains(english, "AI Review found") {
+		t.Fatalf("English body uses stale report wording: %s", english)
+	}
+
+	chinese := renderPullRequestReviewBody(3, review.LanguageSimplifiedChinese)
+	for _, want := range []string{"Review Cat 留下了 3 条行级评论", "建议", "不会阻塞"} {
+		if !strings.Contains(chinese, want) {
+			t.Fatalf("Chinese body missing %q: %s", want, chinese)
+		}
+	}
+}
+
 func TestPublisherAppliesJobInlinePolicy(t *testing.T) {
 	line20 := 20
 	line21 := 21
@@ -347,6 +463,46 @@ func TestPublisherSplitsExistingNewAndObsoleteInlineComments(t *testing.T) {
 	}
 	if _, ok := fake.updatedReviewBodies[58]; ok {
 		t.Fatal("updated human comment")
+	}
+}
+
+func TestExistingInlineCommentsRecognizesTrailingAndLeadingMarkers(t *testing.T) {
+	fingerprint := "aaaaaaaaaaaaaaaa"
+	comments := []ReviewComment{
+		{ID: 55, AuthorType: "Bot", Body: "⚠️ **Potential issue:** Bad call\n\n" + InlineMarker + " fingerprint=" + fingerprint + " -->"},
+		{ID: 56, AuthorType: "Bot", Body: InlineMarker + " fingerprint=bbbbbbbbbbbbbbbb -->\nold format"},
+	}
+
+	got := existingInlineComments(comments)
+	if got[fingerprint].ID != 55 {
+		t.Fatalf("trailing-marker comment not discovered: %+v", got)
+	}
+	if got["bbbbbbbbbbbbbbbb"].ID != 56 {
+		t.Fatalf("leading-marker comment not discovered: %+v", got)
+	}
+}
+
+func TestExistingInlineCommentsIgnoresUnmarkedOrInvalidFingerprint(t *testing.T) {
+	comments := []ReviewComment{
+		{ID: 55, AuthorType: "Bot", Body: "⚠️ **Potential issue:** Bad call\n\nfingerprint=aaaaaaaaaaaaaaaa"},
+		{ID: 56, AuthorType: "Bot", Body: InlineMarker + " fingerprint=not-a-fingerprint -->\ninvalid"},
+		{ID: 57, AuthorType: "User", Body: InlineMarker + " fingerprint=bbbbbbbbbbbbbbbb -->\nhuman"},
+	}
+
+	if got := existingInlineComments(comments); len(got) != 0 {
+		t.Fatalf("unexpected existing comments: %+v", got)
+	}
+}
+
+func TestStaleAndInactiveInlineCommentsPreserveMetadata(t *testing.T) {
+	body := "⚠️ **Potential issue:** Bad call\n\n" + InlineMarker + " fingerprint=aaaaaaaaaaaaaaaa -->"
+	stale := renderStaleInlineComment(body, "aaaaaaaaaaaaaaaa", "abc123")
+	if !strings.Contains(stale, InlineMarker) || !strings.Contains(stale, "fingerprint=aaaaaaaaaaaaaaaa") || !strings.Contains(stale, InlineStaleMarker) {
+		t.Fatalf("stale body lost metadata:\n%s", stale)
+	}
+	inactive := renderInactiveInlineComment(body, "aaaaaaaaaaaaaaaa", review.CleanupStateClosed)
+	if !strings.Contains(inactive, InlineMarker) || !strings.Contains(inactive, "fingerprint=aaaaaaaaaaaaaaaa") || !strings.Contains(inactive, InlineStaleMarker) {
+		t.Fatalf("inactive body lost metadata:\n%s", inactive)
 	}
 }
 

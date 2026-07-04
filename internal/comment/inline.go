@@ -137,9 +137,9 @@ func (p *Publisher) publishInlineComments(ctx context.Context, installationID in
 			continue
 		}
 		stats.Mapped++
-		body := renderInlineFinding(finding, policy.language)
 		fingerprint := inlineFingerprint(finding)
-		body = fmt.Sprintf("%s fingerprint=%s -->\n%s", InlineMarker, fingerprint, body)
+		body := renderInlineFinding(finding, policy.language)
+		body = fmt.Sprintf("%s\n\n%s fingerprint=%s -->", body, InlineMarker, fingerprint)
 		current[fingerprint] = struct{}{}
 		if existingComment, ok := existing[fingerprint]; ok {
 			if err := client.UpdatePullRequestReviewComment(ctx, installationID, owner, repo, existingComment.ID, body); err != nil {
@@ -353,26 +353,33 @@ func inlineSeverityRank(severity review.SeverityThreshold) int {
 }
 
 func renderInlineFinding(finding review.Finding, language review.Language) string {
-	labels := labelsForLanguage(language)
+	labels := inlineLabelsForLanguage(language)
 	var b strings.Builder
-	fmt.Fprintf(&b, "**%s: %s**\n\n", titleCase(finding.Severity), finding.Title)
+	fmt.Fprintf(&b, "%s **%s:** %s", labels.severityIcon(finding.Severity), labels.severityText(finding.Severity), strings.TrimSpace(finding.Title))
+	if strings.TrimSpace(finding.Suggestion) != "" {
+		fmt.Fprintf(&b, "\n\n**%s:** %s", labels.Suggestion, strings.TrimSpace(finding.Suggestion))
+	}
+	var details strings.Builder
 	if finding.Evidence != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", labels.Evidence, finding.Evidence)
+		fmt.Fprintf(&details, "\n\n**%s:** %s", labels.Evidence, strings.TrimSpace(finding.Evidence))
 	}
 	if finding.FailureScenario != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", labels.FailureScenario, finding.FailureScenario)
+		fmt.Fprintf(&details, "\n\n**%s:** %s", labels.FailureScenario, strings.TrimSpace(finding.FailureScenario))
 	}
-	if finding.Suggestion != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", labels.Suggestion, finding.Suggestion)
+	if finding.Confidence != nil {
+		fmt.Fprintf(&details, "\n\n**%s:** %.2f", labels.Confidence, *finding.Confidence)
+	}
+	if details.Len() > 0 {
+		fmt.Fprintf(&b, "\n\n<details>\n<summary>%s</summary>%s\n\n</details>", labels.Details, details.String())
 	}
 	return strings.TrimSpace(b.String())
 }
 
 func renderPullRequestReviewBody(commentCount int, language review.Language) string {
 	if language == review.LanguageSimplifiedChinese {
-		return fmt.Sprintf("AI Review 发现 %d 条行级建议。所有发现均为建议，不会阻塞合并。", commentCount)
+		return fmt.Sprintf("Review Cat 留下了 %d 条行级评论。所有发现均为建议，不会阻塞合并。", commentCount)
 	}
-	return fmt.Sprintf("AI Review found %d inline comment(s). Findings are advisory and non-blocking.", commentCount)
+	return fmt.Sprintf("Review Cat left %d inline comment(s). Findings are advisory and non-blocking.", commentCount)
 }
 
 func renderStaleInlineComment(existingBody, fingerprint, headSHA string) string {
@@ -439,7 +446,58 @@ func extractInlineFingerprint(body string) string {
 		}
 		end++
 	}
-	return body[start:end]
+	fingerprint := body[start:end]
+	if len(fingerprint) != 16 {
+		return ""
+	}
+	return fingerprint
+}
+
+type inlineRenderLabels struct {
+	BlockingRisk    string
+	PotentialIssue  string
+	Suggestion      string
+	Details         string
+	Evidence        string
+	FailureScenario string
+	Confidence      string
+}
+
+func inlineLabelsForLanguage(language review.Language) inlineRenderLabels {
+	if language == review.LanguageSimplifiedChinese {
+		return inlineRenderLabels{
+			BlockingRisk:    "阻塞风险",
+			PotentialIssue:  "潜在问题",
+			Suggestion:      "建议",
+			Details:         "详情",
+			Evidence:        "证据",
+			FailureScenario: "失败场景",
+			Confidence:      "置信度",
+		}
+	}
+	return inlineRenderLabels{
+		BlockingRisk:    "Blocking risk",
+		PotentialIssue:  "Potential issue",
+		Suggestion:      "Suggestion",
+		Details:         "Details",
+		Evidence:        "Evidence",
+		FailureScenario: "Failure scenario",
+		Confidence:      "Confidence",
+	}
+}
+
+func (l inlineRenderLabels) severityIcon(severity string) string {
+	if strings.EqualFold(strings.TrimSpace(severity), "blocker") {
+		return "🚨"
+	}
+	return "⚠️"
+}
+
+func (l inlineRenderLabels) severityText(severity string) string {
+	if strings.EqualFold(strings.TrimSpace(severity), "blocker") {
+		return l.BlockingRisk
+	}
+	return l.PotentialIssue
 }
 
 type lineIndex map[string]map[int]struct{}
