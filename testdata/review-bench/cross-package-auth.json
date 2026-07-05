@@ -1,5 +1,11 @@
 {
   "name": "cross-package-auth-change",
+  "metadata": {
+    "source": "sanitized-example",
+    "provenance": "synthetic-public-fixture",
+    "sanitized": true,
+    "notes": "Public fixture with synthetic source content."
+  },
   "job": {
     "Owner": "octo",
     "Repo": "repo",
@@ -35,9 +41,33 @@
   ],
   "expected_findings": [
     {
+      "id": "auth-required",
       "file": "handler/user.go",
+      "line": 11,
+      "category": "security",
+      "severity": "warning",
       "title": "auth flow change must preserve required authentication",
-      "evidence": "docs/security.md states all user handlers must require auth"
+      "evidence": "docs/security.md states all user handlers must require auth",
+      "evidence_hints": [
+        "RequireAuth",
+        "docs/security.md"
+      ],
+      "matching_hints": [
+        "required authentication"
+      ]
+    }
+  ],
+  "actual_findings": [
+    {
+      "id": "actual-auth-required",
+      "file": "handler/user.go",
+      "line": 11,
+      "category": "security",
+      "severity": "warning",
+      "title": "required authentication can be bypassed",
+      "evidence_hints": [
+        "RequireAuth"
+      ]
     }
   ]
 }

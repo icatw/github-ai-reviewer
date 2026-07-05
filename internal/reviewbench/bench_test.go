@@ -2,8 +2,10 @@ package reviewbench
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github-ai-reviewer/internal/review"
@@ -146,6 +148,237 @@ func TestDecodeFixtureRejectsEmptyFiles(t *testing.T) {
 	_, err := DecodeFixture([]byte(`{"name":"bad","repo_files":{}}`))
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestDecodeFixtureSupportsFindingAnnotationsAndMetadata(t *testing.T) {
+	fixture, err := DecodeFixture([]byte(`{
+		"name": "annotated",
+		"metadata": {
+			"source": "sanitized-real-pr",
+			"provenance": "octo/repo#12",
+			"sanitized": true,
+			"notes": "public fixture"
+		},
+		"files": [{"Filename":"app/auth.go","Status":"modified","Patch":"@@"}],
+		"repo_files": {"app/auth.go":"package app\n"},
+		"golden_relevant_files": ["app/auth.go"],
+		"expected_findings": [{
+			"id": "auth-required",
+			"file": "app/auth.go",
+			"line": 42,
+			"line_end": 45,
+			"title": "auth check is skipped",
+			"category": "security",
+			"severity": "warning",
+			"evidence_hints": ["RequireAuth", "docs/security.md"],
+			"matching_hints": ["missing auth"]
+		}],
+		"actual_findings": [{
+			"id": "actual-auth",
+			"file": "app/auth.go",
+			"line": 43,
+			"title": "handler skips auth check",
+			"category": "security",
+			"severity": "warning",
+			"evidence_hints": ["RequireAuth"]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("DecodeFixture() error = %v", err)
+	}
+	if !fixture.Metadata.Sanitized || fixture.Metadata.Provenance != "octo/repo#12" {
+		t.Fatalf("metadata = %+v", fixture.Metadata)
+	}
+	if got := fixture.ExpectedFindings[0].ID; got != "auth-required" {
+		t.Fatalf("expected finding id = %q", got)
+	}
+	if got := fixture.ActualFindings[0].EvidenceHints; !reflect.DeepEqual(got, []string{"RequireAuth"}) {
+		t.Fatalf("actual evidence hints = %#v", got)
+	}
+}
+
+func TestDecodeFixtureSupportsExpectedNoFindings(t *testing.T) {
+	fixture, err := DecodeFixture([]byte(`{
+		"name": "clean",
+		"files": [{"Filename":"app/user.go","Status":"modified","Patch":"@@"}],
+		"repo_files": {"app/user.go":"package app\n"},
+		"expected_no_findings": true,
+		"actual_findings": [{
+			"id": "style-note",
+			"file": "app/user.go",
+			"line": 7,
+			"title": "rename this helper",
+			"category": "style",
+			"severity": "note"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("DecodeFixture() error = %v", err)
+	}
+	if !fixture.ExpectedNoFindings {
+		t.Fatal("expected no-finding flag to decode")
+	}
+}
+
+func TestDecodeFixtureRejectsExpectedNoFindingsWithExpectedFindings(t *testing.T) {
+	_, err := DecodeFixture([]byte(`{
+		"name": "conflict",
+		"files": [{"Filename":"app/user.go","Status":"modified","Patch":"@@"}],
+		"repo_files": {"app/user.go":"package app\n"},
+		"expected_no_findings": true,
+		"expected_findings": [{"id":"bug","file":"app/user.go","title":"bug"}]
+	}`))
+	if err == nil {
+		t.Fatal("expected conflicting annotations error")
+	}
+}
+
+func TestRunReportsFindingQualityCategories(t *testing.T) {
+	fixture := Fixture{
+		Name: "quality",
+		Files: []review.FileChange{{
+			Filename: "app/auth.go",
+			Status:   "modified",
+			Patch:    "@@ auth",
+		}},
+		RepoFiles:           map[string]string{"app/auth.go": "package app\n"},
+		GoldenRelevantFiles: []string{"app/auth.go"},
+		ExpectedFindings: []ExpectedFinding{
+			{ID: "auth-required", File: "app/auth.go", Line: 40, LineEnd: 45, Title: "missing auth check", Category: "security", Severity: "warning", EvidenceHints: []string{"RequireAuth"}},
+			{ID: "audit-log", File: "app/audit.go", Line: 8, Title: "missing audit log", Category: "audit", Severity: "note"},
+		},
+		ActualFindings: []ActualFinding{
+			{ID: "actual-auth", File: "app/auth.go", Line: 42, Title: "auth check is missing", Category: "security", Severity: "warning", EvidenceHints: []string{"RequireAuth"}},
+			{ID: "actual-dup", File: "app/auth.go", Line: 43, Title: "missing auth check again", Category: "security", Severity: "warning", QualityLabels: []string{"duplicate"}, DuplicateOf: "auth-required"},
+			{ID: "actual-low", File: "app/auth.go", Line: 50, Title: "minor naming nit", Category: "style", Severity: "note", QualityLabels: []string{"style-only"}},
+			{ID: "actual-unexpected", File: "app/other.go", Line: 3, Title: "other issue", Category: "correctness", Severity: "warning"},
+		},
+	}
+
+	report, err := Run(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	quality := report.FindingQuality
+	if quality.Status != FindingQualityAnnotated {
+		t.Fatalf("quality status = %q", quality.Status)
+	}
+	if quality.ExpectedCount != 2 || quality.CoveredCount != 1 || quality.MissedCount != 1 || quality.UnexpectedCount != 1 || quality.DuplicateCount != 1 || quality.LowValueCount != 1 {
+		t.Fatalf("quality counts = %+v", quality)
+	}
+	if got := quality.Covered[0].ExpectedID; got != "auth-required" {
+		t.Fatalf("covered expected id = %q", got)
+	}
+	if got := quality.Missed[0].ExpectedID; got != "audit-log" {
+		t.Fatalf("missed expected id = %q", got)
+	}
+	if got := quality.Unexpected[0].Title; got != "other issue" {
+		t.Fatalf("unexpected title = %q", got)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	if strings.Contains(string(encoded), "EvidenceHints") || strings.Contains(string(encoded), "RequireAuth") {
+		t.Fatalf("report leaked evidence hints: %s", string(encoded))
+	}
+}
+
+func TestRunReportsExpectedNoFindingUnexpected(t *testing.T) {
+	report, err := Run(context.Background(), Fixture{
+		Name: "clean",
+		Files: []review.FileChange{{
+			Filename: "app/user.go",
+			Status:   "modified",
+			Patch:    "@@",
+		}},
+		RepoFiles:          map[string]string{"app/user.go": "package app\n"},
+		ExpectedNoFindings: true,
+		ActualFindings: []ActualFinding{{
+			ID:       "actual-noise",
+			File:     "app/user.go",
+			Line:     9,
+			Title:    "unnecessary helper rename",
+			Category: "style",
+			Severity: "note",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if report.FindingQuality.Status != FindingQualityAnnotated {
+		t.Fatalf("quality status = %q", report.FindingQuality.Status)
+	}
+	if report.FindingQuality.ExpectedNoFindings != true || report.FindingQuality.UnexpectedCount != 1 {
+		t.Fatalf("quality = %+v", report.FindingQuality)
+	}
+}
+
+func TestRunOmitsFindingQualityForContextOnlyFixture(t *testing.T) {
+	report, err := Run(context.Background(), Fixture{
+		Name: "context-only",
+		Files: []review.FileChange{{
+			Filename: "app/user.go",
+			Status:   "modified",
+			Patch:    "@@",
+		}},
+		RepoFiles:           map[string]string{"app/user.go": "package app\n"},
+		ExpectedFindings:    []ExpectedFinding{{ID: "annotated-later", File: "app/user.go", Title: "future expected finding"}},
+		GoldenRelevantFiles: []string{"app/user.go"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if report.FindingQuality.Status != FindingQualityNotAnnotated {
+		t.Fatalf("quality status = %q", report.FindingQuality.Status)
+	}
+	if report.FindingQuality.ExpectedCount != 1 || report.FindingQuality.CoveredCount != 0 {
+		t.Fatalf("quality = %+v", report.FindingQuality)
+	}
+}
+
+func TestRunSuiteAggregatesFindingQuality(t *testing.T) {
+	fixtures := []Fixture{
+		{
+			Name:      "annotated",
+			Files:     []review.FileChange{{Filename: "app/a.go", Status: "modified", Patch: "@@"}},
+			RepoFiles: map[string]string{"app/a.go": "package app\n"},
+			ExpectedFindings: []ExpectedFinding{{
+				ID: "a", File: "app/a.go", Line: 10, Title: "missing validation", Category: "correctness", Severity: "warning",
+			}},
+			ActualFindings: []ActualFinding{{
+				ID: "actual-a", File: "app/a.go", Line: 10, Title: "missing validation", Category: "correctness", Severity: "warning",
+			}},
+		},
+		{
+			Name:      "context-only",
+			Files:     []review.FileChange{{Filename: "app/b.go", Status: "modified", Patch: "@@"}},
+			RepoFiles: map[string]string{"app/b.go": "package app\n"},
+			ExpectedFindings: []ExpectedFinding{{
+				ID: "legacy-b", File: "app/b.go", Line: 5, Title: "legacy expected finding", Category: "correctness", Severity: "warning",
+			}},
+		},
+		{
+			Name:               "clean",
+			Files:              []review.FileChange{{Filename: "app/c.go", Status: "modified", Patch: "@@"}},
+			RepoFiles:          map[string]string{"app/c.go": "package app\n"},
+			ExpectedNoFindings: true,
+			ActualFindings: []ActualFinding{{
+				ID: "actual-c", File: "app/c.go", Line: 1, Title: "generic note", Category: "style", Severity: "note", QualityLabels: []string{"too-generic"},
+			}},
+		},
+	}
+
+	report, err := RunSuite(context.Background(), fixtures)
+	if err != nil {
+		t.Fatalf("RunSuite() error = %v", err)
+	}
+	if report.FindingQuality.AnnotatedFixtureCount != 2 || report.FindingQuality.NotAnnotatedFixtureCount != 1 {
+		t.Fatalf("suite quality fixture counts = %+v", report.FindingQuality)
+	}
+	if report.FindingQuality.ExpectedCount != 1 || report.FindingQuality.CoveredCount != 1 || report.FindingQuality.LowValueCount != 1 {
+		t.Fatalf("suite quality counts = %+v", report.FindingQuality)
 	}
 }
 

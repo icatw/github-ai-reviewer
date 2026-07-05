@@ -6,5 +6,8 @@
 private-key*.pem
 config/mcporter.json
 data/
+review-bench-private/
 *.db
 /server
+/review-bench
+/review-bench-from-pr

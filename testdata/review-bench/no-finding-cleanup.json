@@ -1,0 +1,35 @@
+{
+  "name": "no-finding-cleanup",
+  "metadata": {
+    "source": "sanitized-example",
+    "provenance": "synthetic-public-fixture",
+    "sanitized": true,
+    "notes": "Public fixture for explicit expected no-finding behavior."
+  },
+  "job": {
+    "Owner": "octo",
+    "Repo": "repo",
+    "PullNumber": 11,
+    "HeadSHA": "abc",
+    "Action": "opened"
+  },
+  "files": [
+    {
+      "Filename": "internal/user/cleanup.go",
+      "Status": "modified",
+      "Additions": 2,
+      "Deletions": 2,
+      "Patch": "@@ -3,6 +3,6 @@ func NormalizeName(name string) string {\n-\treturn strings.Trim(name, \" \")\n+\treturn strings.TrimSpace(name)\n"
+    }
+  ],
+  "repo_files": {
+    "go.mod": "module example.com/repo\n",
+    "internal/user/cleanup.go": "package user\n\nimport \"strings\"\n\nfunc NormalizeName(name string) string {\n\treturn strings.TrimSpace(name)\n}\n",
+    "internal/user/cleanup_test.go": "package user\n\nfunc TestNormalizeName(t *testing.T) {}\n"
+  },
+  "golden_relevant_files": [
+    "internal/user/cleanup.go",
+    "internal/user/cleanup_test.go"
+  ],
+  "expected_no_findings": true
+}

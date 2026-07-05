@@ -197,9 +197,9 @@ scripts/check_publication_safety.sh
 
 `smoke_local.sh` builds the service, starts it with dummy non-secret configuration, checks `/healthz`, and stops it. It does not call GitHub, call an LLM, clone a repository, publish comments, or create Check Runs.
 
-## Review Context Benchmark
+## Review Quality Benchmark
 
-Use the offline review benchmark to measure repository-context retrieval before changing prompts or calling a model:
+Use the offline review benchmark to measure repository-context retrieval and annotated finding quality before changing prompts, context selection, verification, or reporting code:
 
 ```bash
 go run ./cmd/review-bench -fixture testdata/review-bench/cross-package-auth.json
@@ -207,7 +207,9 @@ go run ./cmd/review-bench -fixture testdata/review-bench/python-fastapi-user.jso
 go run ./cmd/review-bench -fixtures 'testdata/review-bench/*.json'
 ```
 
-A fixture contains changed PR files, an in-memory repository file map, and `golden_relevant_files`. The command runs the same `BuildRepoContext` path used by production and reports retrieved files, omissions, byte budget use, precision, recall, and F1. With `-fixtures`, the report includes per-fixture cases plus aggregate micro-averaged precision, recall, and F1 across the whole suite. This keeps global-context review work measurable without GitHub credentials or LLM calls.
+A fixture contains changed PR files, an in-memory repository file map, and `golden_relevant_files`. The command runs the same `BuildRepoContext` path used by production and reports retrieved files, omissions, byte budget use, precision, recall, and F1. With `-fixtures`, the report includes per-fixture cases plus aggregate micro-averaged precision, recall, and F1 across the whole suite. This keeps global-context review work measurable without GitHub credentials or live LLM calls.
+
+Finding-quality metrics are emitted only when a fixture is explicitly annotated and includes captured `actual_findings`, or when it declares `expected_no_findings`. Existing context-only fixtures remain valid; their `finding_quality.status` is `not_annotated`.
 
 Generate an offline fixture from a real pull request with the GitHub App credentials configured in an environment file:
 
@@ -215,7 +217,55 @@ Generate an offline fixture from a real pull request with the GitHub App credent
 go run ./cmd/review-bench-from-pr -env-file .env.production -owner OWNER -repo REPO -pull NUMBER -out /tmp/review-fixture.json
 ```
 
-The generator is read-only: it resolves the repository installation, fetches PR metadata and changed files, records only repository files that `BuildRepoContext` actually reads, and writes a local fixture. Do not commit fixtures generated from private repositories unless they have been reviewed and intentionally sanitized.
+The generator is read-only: it resolves the repository installation, fetches PR metadata and changed files, records only repository files that `BuildRepoContext` actually reads, and writes a local fixture. It does not publish comments, create Check Runs, run a production review job, or modify the remote repository.
+
+Treat generated real-PR fixtures as unsanitized by default. Keep private fixtures under `/tmp`, `data/`, `review-bench-private/`, or another gitignored quarantine path until reviewed. Before moving a fixture into `testdata/review-bench`, remove secrets and unintended private source content, ensure captured findings are safe summaries, and set:
+
+```json
+"metadata": {
+  "source": "sanitized-real-pr",
+  "provenance": "owner/repo#123",
+  "sanitized": true
+}
+```
+
+Annotate expected findings with deterministic safe fields. `id`, `file`, `line` or `line_end`, `category`, `severity`, `title`, `evidence_hints`, and `matching_hints` are used for matching; standard reports only print safe summaries and do not print raw evidence hints.
+
+```json
+"expected_findings": [
+  {
+    "id": "auth-required",
+    "file": "handler/user.go",
+    "line": 42,
+    "category": "security",
+    "severity": "warning",
+    "title": "auth check is skipped",
+    "evidence_hints": ["RequireAuth"],
+    "matching_hints": ["required authentication"]
+  }
+],
+"actual_findings": [
+  {
+    "id": "actual-auth",
+    "file": "handler/user.go",
+    "line": 42,
+    "category": "security",
+    "severity": "warning",
+    "title": "required authentication can be bypassed",
+    "evidence_hints": ["RequireAuth"]
+  }
+]
+```
+
+For clean PRs, declare no-finding intent explicitly:
+
+```json
+"expected_no_findings": true
+```
+
+Do not infer clean cases from an empty `expected_findings` array; that remains a valid context-only fixture shape. Classify captured actual findings deterministically with `quality_labels` such as `duplicate`, `style-only`, `too-generic`, or `unsupported`, and use `duplicate_of` when applicable. Duplicate and low-value findings are counted separately and do not improve expected finding coverage.
+
+Use suite output for manual regression comparison. Compare aggregate context metrics plus `finding_quality.expected_count`, `covered_count`, `missed_count`, `unexpected_count`, `duplicate_count`, and `low_value_count`; then inspect per-fixture safe missed or unexpected summaries. M16 does not enforce CI thresholds and benchmark metrics do not create production merge-blocking behavior.
 
 Inline PR review comments are available behind `INLINE_COMMENTS_ENABLED=true`. The bot only creates inline comments for `blocker` or `warning` findings whose `file:line` maps to a RIGHT-side line in the PR diff and whose evidence fields pass the inline quality gate; unmapped, low-confidence, or lower-severity findings stay in the summary comment. Service logs include safe aggregate inline counters for each run so quality thresholds can be tuned without exposing source snippets.
 

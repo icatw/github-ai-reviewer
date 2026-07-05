@@ -79,7 +79,13 @@ func main() {
 	review.BuildRepoContext(ctx, job, files, recorder, review.DefaultContextBudgets)
 
 	fixture := reviewbench.Fixture{
-		Name:      fmt.Sprintf("%s-%s-pr-%d", sanitizeName(*owner), sanitizeName(*repo), *pull),
+		Name: fmt.Sprintf("%s-%s-pr-%d", sanitizeName(*owner), sanitizeName(*repo), *pull),
+		Metadata: reviewbench.FixtureMetadata{
+			Source:     "generated-real-pr",
+			Provenance: fmt.Sprintf("%s/%s#%d", *owner, *repo, *pull),
+			Sanitized:  false,
+			Notes:      "Generated fixture; keep in a gitignored or temporary path until reviewed and sanitized.",
+		},
 		Job:       job,
 		Files:     files,
 		RepoFiles: recorder.files,
@@ -101,7 +107,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "write fixture: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "wrote fixture %s changed_files=%d repo_files=%d directories=%d\n", *outPath, len(files), len(recorder.files), len(recorder.dirs))
+	fmt.Fprintf(os.Stderr, "wrote unsanitized fixture %s changed_files=%d repo_files=%d directories=%d\n", *outPath, len(files), len(recorder.files), len(recorder.dirs))
+	fmt.Fprintln(os.Stderr, "keep generated private fixtures in /tmp, data/, or another gitignored quarantine path until sanitized; set metadata.sanitized=true only after review")
 }
 
 func (r *recordingReader) FetchFileContent(ctx context.Context, installationID int64, owner, repo, ref, filePath string) (string, error) {

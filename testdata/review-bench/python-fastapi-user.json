@@ -1,5 +1,11 @@
 {
   "name": "python-fastapi-user-change",
+  "metadata": {
+    "source": "sanitized-example",
+    "provenance": "synthetic-public-fixture",
+    "sanitized": true,
+    "notes": "Public context-only fixture with synthetic source content."
+  },
   "job": {
     "Owner": "octo",
     "Repo": "repo",
