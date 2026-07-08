@@ -109,7 +109,7 @@ func DefaultGlobalReviewConfig(language Language) GlobalReviewConfig {
 		SafeCheckoutEnabled:       true,
 		Language:                  normalizeEffectiveLanguage(language),
 		InlineMaxComments:         10,
-		InlineSeverityThreshold:   SeverityWarning,
+		InlineSeverityThreshold:   SeverityBlocker,
 		InlineConfidenceThreshold: 0.70,
 	}
 }

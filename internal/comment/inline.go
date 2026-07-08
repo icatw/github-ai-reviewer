@@ -194,7 +194,7 @@ func (p *Publisher) inlinePolicy(effective *review.EffectiveReviewConfig) inline
 	policy := inlinePolicy{
 		enabled:             p.inlineEnabled,
 		maxComments:         maxInlineComments,
-		severityThreshold:   review.SeverityWarning,
+		severityThreshold:   review.SeverityBlocker,
 		confidenceThreshold: minInlineConfidence,
 		language:            p.language,
 	}
@@ -314,7 +314,7 @@ func shouldPublishInlineFinding(finding review.Finding) bool {
 	return shouldPublishInlineFindingWithPolicy(finding, inlinePolicy{
 		enabled:             true,
 		maxComments:         maxInlineComments,
-		severityThreshold:   review.SeverityWarning,
+		severityThreshold:   review.SeverityBlocker,
 		confidenceThreshold: minInlineConfidence,
 	})
 }

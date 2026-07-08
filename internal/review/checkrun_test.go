@@ -27,12 +27,12 @@ func TestCheckRunReporterCreatesInProgressWhenNoMatchExists(t *testing.T) {
 	}
 }
 
-func TestCheckRunReporterUpdatesNewestMatchingCheckRun(t *testing.T) {
+func TestCheckRunReporterUpdatesNewestInProgressCheckRun(t *testing.T) {
 	client := &fakeCheckRunClient{
 		runs: []CheckRun{
-			{ID: 10, Name: CheckRunName, HeadSHA: "abc"},
+			{ID: 10, Name: CheckRunName, HeadSHA: "abc", Status: CheckRunStatusCompleted},
 			{ID: 11, Name: "Other", HeadSHA: "abc"},
-			{ID: 12, Name: CheckRunName, HeadSHA: "abc"},
+			{ID: 12, Name: CheckRunName, HeadSHA: "abc", Status: CheckRunStatusInProgress},
 		},
 	}
 	reporter := NewCheckRunReporter(client)
@@ -75,7 +75,7 @@ func TestCheckRunReporterCreatesCompletedCheckWithConclusionWhenNoMatchExists(t 
 }
 
 func TestCheckRunReporterKeepsHighSeverityFindingsAdvisory(t *testing.T) {
-	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc"}}}
+	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc", Status: CheckRunStatusInProgress}}}
 	reporter := NewCheckRunReporter(client)
 
 	err := reporter.ReviewCompleted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}, ReviewResult{
@@ -101,7 +101,7 @@ func TestCheckRunReporterKeepsHighSeverityFindingsAdvisory(t *testing.T) {
 }
 
 func TestCheckRunReporterKeepsDowngradedFindingsAdvisory(t *testing.T) {
-	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc"}}}
+	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc", Status: CheckRunStatusInProgress}}}
 	reporter := NewCheckRunReporter(client)
 
 	err := reporter.ReviewCompleted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}, ReviewResult{
@@ -127,7 +127,7 @@ func TestCheckRunReporterKeepsDowngradedFindingsAdvisory(t *testing.T) {
 }
 
 func TestCheckRunReporterFailsCheckOnlyForInfrastructureFailure(t *testing.T) {
-	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc"}}}
+	client := &fakeCheckRunClient{runs: []CheckRun{{ID: 10, Name: CheckRunName, HeadSHA: "abc", Status: CheckRunStatusInProgress}}}
 	reporter := NewCheckRunReporter(client)
 
 	err := reporter.JobFailed(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"}, Failure{
@@ -152,7 +152,7 @@ func TestCheckRunReporterFailsCheckOnlyForInfrastructureFailure(t *testing.T) {
 }
 
 func TestCheckRunReporterReturnsSafeCategoryWhenClientFails(t *testing.T) {
-	reporter := NewCheckRunReporter(&fakeCheckRunClient{listErr: errors.New("github token failure")})
+	reporter := NewCheckRunReporter(&fakeCheckRunClient{createErr: errors.New("github token failure")})
 
 	err := reporter.JobStarted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"})
 	if err == nil {
@@ -180,7 +180,7 @@ func TestCheckRunReporterDegradesPermissionErrors(t *testing.T) {
 }
 
 func TestCheckRunReporterStillReportsServerErrors(t *testing.T) {
-	reporter := NewCheckRunReporter(&fakeCheckRunClient{listErr: fakeGitHubStatusError{status: 500}})
+	reporter := NewCheckRunReporter(&fakeCheckRunClient{createErr: fakeGitHubStatusError{status: 500}})
 
 	err := reporter.JobStarted(context.Background(), Job{InstallationID: 42, Owner: "octo", Repo: "repo", PullNumber: 7, HeadSHA: "abc"})
 	if err == nil {
@@ -196,10 +196,11 @@ func TestCheckRunReporterStillReportsServerErrors(t *testing.T) {
 }
 
 type fakeCheckRunClient struct {
-	runs    []CheckRun
-	created []CheckRunCreateRequest
-	updated []fakeCheckRunUpdate
-	listErr error
+	runs      []CheckRun
+	created   []CheckRunCreateRequest
+	updated   []fakeCheckRunUpdate
+	listErr   error
+	createErr error
 }
 
 func (f *fakeCheckRunClient) ListCheckRuns(ctx context.Context, installationID int64, owner, repo, ref string) ([]CheckRun, error) {
@@ -210,8 +211,11 @@ func (f *fakeCheckRunClient) ListCheckRuns(ctx context.Context, installationID i
 }
 
 func (f *fakeCheckRunClient) CreateCheckRun(ctx context.Context, installationID int64, owner, repo string, req CheckRunCreateRequest) (CheckRun, error) {
+	if f.createErr != nil {
+		return CheckRun{}, f.createErr
+	}
 	f.created = append(f.created, req)
-	run := CheckRun{ID: int64(100 + len(f.created)), Name: req.Name, HeadSHA: req.HeadSHA}
+	run := CheckRun{ID: int64(100 + len(f.created)), Name: req.Name, HeadSHA: req.HeadSHA, Status: req.Status}
 	f.runs = append(f.runs, run)
 	return run, nil
 }

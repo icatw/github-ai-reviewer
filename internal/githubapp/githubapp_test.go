@@ -425,6 +425,7 @@ func TestClientCreatesListsAndUpdatesCheckRuns(t *testing.T) {
 				"id":       22,
 				"name":     "AI Review",
 				"head_sha": "abc",
+				"status":   "in_progress",
 			}}})
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/octo/repo/check-runs":
 			sawCreate = r.Header.Get("Authorization") == "Bearer installation-token"
@@ -461,7 +462,7 @@ func TestClientCreatesListsAndUpdatesCheckRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCheckRuns() error = %v", err)
 	}
-	if len(runs) != 1 || runs[0].ID != 22 || runs[0].Name != "AI Review" || runs[0].HeadSHA != "abc" {
+	if len(runs) != 1 || runs[0].ID != 22 || runs[0].Name != "AI Review" || runs[0].HeadSHA != "abc" || runs[0].Status != "in_progress" {
 		t.Fatalf("runs = %+v", runs)
 	}
 	run, err := client.CreateCheckRun(context.Background(), 42, "octo", "repo", review.CheckRunCreateRequest{

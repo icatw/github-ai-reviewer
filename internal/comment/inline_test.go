@@ -40,7 +40,7 @@ func TestPublisherCreatesInlineCommentForDiffFinding(t *testing.T) {
 	err := pub.PublishForHead(context.Background(), 42, "octo", "repo", 7, "abc123", review.ReviewResult{
 		Summary: "summary",
 		Findings: []review.Finding{{
-			Severity:        "warning",
+			Severity:        "blocker",
 			File:            "main.go",
 			Line:            &line,
 			Title:           "Bad call",
@@ -157,6 +157,7 @@ func TestRenderInlineFindingStartsWithVisibleSeverityLabel(t *testing.T) {
 	blocker := eligibleFinding("main.go", line, "Nil response can panic", "resp is dereferenced")
 	blocker.Severity = "blocker"
 	warning := eligibleFinding("main.go", line, "Missing error check", "err is ignored")
+	warning.Severity = "warning"
 
 	tests := []struct {
 		name    string
@@ -615,7 +616,7 @@ func TestPublisherLogsInlineStats(t *testing.T) {
 	line99 := 99
 	lowConfidence := 0.69
 	updatedFinding := review.Finding{
-		Severity:        "warning",
+		Severity:        "blocker",
 		File:            "main.go",
 		Line:            &line21,
 		Title:           "Updated finding",
@@ -637,7 +638,7 @@ func TestPublisherLogsInlineStats(t *testing.T) {
 		Summary: "summary",
 		Findings: []review.Finding{
 			{
-				Severity:        "warning",
+				Severity:        "blocker",
 				File:            "main.go",
 				Line:            &line20,
 				Title:           "Created finding",
@@ -647,7 +648,7 @@ func TestPublisherLogsInlineStats(t *testing.T) {
 			},
 			updatedFinding,
 			{
-				Severity:        "warning",
+				Severity:        "blocker",
 				File:            "main.go",
 				Line:            &line20,
 				Title:           "Low confidence",
@@ -657,7 +658,7 @@ func TestPublisherLogsInlineStats(t *testing.T) {
 				Confidence:      &lowConfidence,
 			},
 			{
-				Severity:        "warning",
+				Severity:        "blocker",
 				File:            "main.go",
 				Line:            &line99,
 				Title:           "Unmapped finding",
@@ -694,7 +695,7 @@ func TestPublisherLogsInlineStats(t *testing.T) {
 func TestPublisherUpdatesExistingInlineComment(t *testing.T) {
 	line := 20
 	finding := review.Finding{
-		Severity:        "warning",
+		Severity:        "blocker",
 		File:            "main.go",
 		Line:            &line,
 		Title:           "Bad call",
@@ -781,7 +782,7 @@ func TestPublisherCleanupSkipsInlineWhenDisabled(t *testing.T) {
 
 func eligibleFinding(file string, line int, title, evidence string) review.Finding {
 	return review.Finding{
-		Severity:        "warning",
+		Severity:        "blocker",
 		File:            file,
 		Line:            &line,
 		Title:           title,

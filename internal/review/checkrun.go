@@ -24,6 +24,7 @@ type CheckRun struct {
 	ID      int64
 	Name    string
 	HeadSHA string
+	Status  string
 }
 
 type CheckRunOutput struct {
@@ -71,7 +72,13 @@ func (r *CheckRunReporter) JobStarted(ctx context.Context, job Job) error {
 			Summary: "AI review is processing this pull request. Findings are advisory and non-blocking.",
 		},
 	}
-	return r.upsert(ctx, job, req, CheckRunUpdateRequest{Status: req.Status, Output: req.Output})
+	if _, err := r.client.CreateCheckRun(ctx, job.InstallationID, job.Owner, job.Repo, req); err != nil {
+		if shouldDegradeCheckRun(err) {
+			return nil
+		}
+		return checkRunFailure(err)
+	}
+	return nil
 }
 
 func (r *CheckRunReporter) ReviewCompleted(ctx context.Context, job Job, result ReviewResult) error {
@@ -154,7 +161,7 @@ func (r *CheckRunReporter) match(ctx context.Context, job Job) (CheckRun, bool, 
 		return CheckRun{}, false, err
 	}
 	for i := len(runs) - 1; i >= 0; i-- {
-		if runs[i].Name == CheckRunName && runs[i].HeadSHA == job.HeadSHA && runs[i].ID != 0 {
+		if runs[i].Name == CheckRunName && runs[i].HeadSHA == job.HeadSHA && runs[i].ID != 0 && runs[i].Status == CheckRunStatusInProgress {
 			return runs[i], true, nil
 		}
 	}

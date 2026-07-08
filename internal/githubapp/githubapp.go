@@ -349,7 +349,7 @@ func (c *Client) ListCheckRuns(ctx context.Context, installationID int64, owner,
 	}
 	runs := make([]review.CheckRun, 0, len(out.CheckRuns))
 	for _, run := range out.CheckRuns {
-		runs = append(runs, review.CheckRun{ID: run.ID, Name: run.Name, HeadSHA: run.HeadSHA})
+		runs = append(runs, review.CheckRun{ID: run.ID, Name: run.Name, HeadSHA: run.HeadSHA, Status: run.Status})
 	}
 	return runs, nil
 }
@@ -546,6 +546,7 @@ type githubCheckRun struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
 	HeadSHA string `json:"head_sha"`
+	Status  string `json:"status"`
 }
 
 type githubCheckRunRequest struct {
