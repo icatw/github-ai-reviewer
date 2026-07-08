@@ -267,6 +267,12 @@ Do not infer clean cases from an empty `expected_findings` array; that remains a
 
 Use suite output for manual regression comparison. Compare aggregate context metrics plus `finding_quality.expected_count`, `covered_count`, `missed_count`, `unexpected_count`, `duplicate_count`, and `low_value_count`; then inspect per-fixture safe missed or unexpected summaries. M16 does not enforce CI thresholds and benchmark metrics do not create production merge-blocking behavior.
 
+For representative real-PR sampling, use the M17 runbook and safe templates:
+
+- [Real PR fixture sampling runbook](docs/review-bench/real-pr-fixture-sampling-runbook.md)
+- [Batch manifest JSON template](docs/review-bench/real-pr-sampling-manifest.template.json)
+- [Suite checklist template](docs/review-bench/suite-checklist-template.md)
+
 Inline PR review comments are available behind `INLINE_COMMENTS_ENABLED=true`. The bot only creates inline comments for `blocker` or `warning` findings whose `file:line` maps to a RIGHT-side line in the PR diff and whose evidence fields pass the inline quality gate; unmapped, low-confidence, or lower-severity findings stay in the summary comment. Service logs include safe aggregate inline counters for each run so quality thresholds can be tuned without exposing source snippets.
 
 ## Production Deployment

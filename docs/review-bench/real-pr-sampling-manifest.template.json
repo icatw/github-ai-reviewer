@@ -1,0 +1,134 @@
+{
+  "schema_version": "m17.real_pr_fixture_sampling.v1",
+  "batch": {
+    "id": "m17-initial-real-pr-sample",
+    "owner": "review-quality",
+    "created_at": "YYYY-MM-DD",
+    "purpose": "Collect 10-20 safe real-PR benchmark fixtures before tuning prompts, context, verification, or reporters.",
+    "checklist_path": "docs/review-bench/suite-checklist-template.md",
+    "safe_to_commit": true
+  },
+  "privacy_policy": {
+    "default_privacy": "private",
+    "default_sanitization_status": "unsanitized",
+    "private_quarantine_roots": [
+      "data/review-bench/private/",
+      "review-bench-private/",
+      "/tmp/review-bench/"
+    ],
+    "tracked_sanitized_fixture_root": "testdata/review-bench/",
+    "forbidden_manifest_content": [
+      "raw source code",
+      "raw patches",
+      "raw prompts",
+      "raw model output",
+      "secrets",
+      "tokens",
+      "private keys",
+      "API keys",
+      "installation tokens",
+      "complete webhook payloads"
+    ]
+  },
+  "matrix_targets": {
+    "target_fixture_count": "10-20",
+    "required_tags": [
+      "auth-security",
+      "config-ci",
+      "api-backend",
+      "tests",
+      "docs-only",
+      "go",
+      "python-or-javascript",
+      "clean-no-finding",
+      "noisy-low-value"
+    ]
+  },
+  "samples": [
+    {
+      "fixture_id": "sample-001-auth-security-go",
+      "target": {
+        "owner": "OWNER",
+        "repo": "REPO",
+        "pull": 123,
+        "head_sha": "optional-head-sha-for-operator-cross-check"
+      },
+      "output": {
+        "fixture_path": "data/review-bench/private/sample-001-auth-security-go.json",
+        "checklist_anchor": "sample-001-auth-security-go",
+        "tracked_after_sanitization_path": "testdata/review-bench/sample-001-auth-security-go.json"
+      },
+      "privacy": {
+        "repository_visibility": "private",
+        "fixture_sanitization_status": "unsanitized",
+        "sanitization_intent": "quarantine-only",
+        "safe_to_commit_fixture": false,
+        "safe_to_commit_manifest_entry": true
+      },
+      "matrix_tags": [
+        "auth-security",
+        "api-backend",
+        "go"
+      ],
+      "selection_rationale": "Short safe rationale for why this PR belongs in the sample; avoid implementation details.",
+      "generation": {
+        "status": "not_started",
+        "generated_at": "",
+        "command_shape": "go run ./cmd/review-bench-from-pr -env-file ENV -owner OWNER -repo REPO -pull 123 -out data/review-bench/private/sample-001-auth-security-go.json",
+        "notes": ""
+      },
+      "annotation_status": {
+        "golden_relevant_files": "not_started",
+        "expected_findings": "not_started",
+        "expected_no_findings": "not_applicable",
+        "actual_findings": "not_started",
+        "quality_labels": "not_started",
+        "reviewer_notes": "not_started",
+        "unresolved_todos": [
+          "Confirm expected finding boundaries without copying raw code into this manifest."
+        ]
+      }
+    },
+    {
+      "fixture_id": "sample-002-clean-docs-only",
+      "target": {
+        "owner": "OWNER",
+        "repo": "PUBLIC_OR_SANITIZED_REPO",
+        "pull": 456,
+        "head_sha": ""
+      },
+      "output": {
+        "fixture_path": "data/review-bench/private/sample-002-clean-docs-only.json",
+        "checklist_anchor": "sample-002-clean-docs-only",
+        "tracked_after_sanitization_path": "testdata/review-bench/sample-002-clean-docs-only.json"
+      },
+      "privacy": {
+        "repository_visibility": "public",
+        "fixture_sanitization_status": "pending_review",
+        "sanitization_intent": "candidate-for-tracked-testdata-after-human-review",
+        "safe_to_commit_fixture": false,
+        "safe_to_commit_manifest_entry": true
+      },
+      "matrix_tags": [
+        "docs-only",
+        "clean-no-finding"
+      ],
+      "selection_rationale": "Clean docs-only PR for explicit expected_no_findings coverage.",
+      "generation": {
+        "status": "not_started",
+        "generated_at": "",
+        "command_shape": "go run ./cmd/review-bench-from-pr -env-file ENV -owner OWNER -repo PUBLIC_OR_SANITIZED_REPO -pull 456 -out data/review-bench/private/sample-002-clean-docs-only.json",
+        "notes": ""
+      },
+      "annotation_status": {
+        "golden_relevant_files": "not_started",
+        "expected_findings": "not_applicable",
+        "expected_no_findings": "not_started",
+        "actual_findings": "not_started",
+        "quality_labels": "not_started",
+        "reviewer_notes": "not_started",
+        "unresolved_todos": []
+      }
+    }
+  ]
+}
